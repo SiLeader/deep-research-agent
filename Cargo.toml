@@ -1,0 +1,33 @@
+[workspace]
+members = ["deep-research-arbiter", "deep-research-react-agent", "deep-research-tools"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+deep-research-arbiter = { path = "deep-research-arbiter" }
+deep-research-react-agent = { path = "deep-research-react-agent" }
+deep-research-tools = { path = "deep-research-tools" }
+
+genai = "0.6.5"
+
+serde = "1.0.229"
+serde_json = "1.0.151"
+schemars = "1.2.2"
+
+chrono = "0.4.45"
+
+async-trait = "0.1.92"
+tokio = "1.53.1"
+
+anyhow = "1.0.104"
+
+reqwest = "0.13.5"
+
+[package]
+name = "deep-research"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
