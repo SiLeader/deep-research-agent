@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[async_trait]
 pub trait DeepResearchTool: Send + Sync + Clone {
@@ -38,8 +39,9 @@ pub trait DeepResearchTool: Send + Sync + Clone {
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output>;
 }
 
+#[derive(Clone)]
 pub struct DeepResearchTools {
-    tools: HashMap<String, Box<dyn WrappedTool>>,
+    tools: HashMap<String, Arc<dyn WrappedTool>>,
 }
 
 impl DeepResearchTools {
@@ -48,7 +50,7 @@ impl DeepResearchTools {
         T: DeepResearchTool + 'static,
     {
         let name = tool.name().to_string();
-        self.tools.insert(name, Box::new(Wrapped::new(tool)));
+        self.tools.insert(name, Arc::new(Wrapped::new(tool)));
     }
 
     pub async fn call(

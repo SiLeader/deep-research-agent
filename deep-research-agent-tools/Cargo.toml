@@ -1,0 +1,17 @@
+[package]
+name = "deep-research-agent-tools"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+deep-research-react-agent = { workspace = true }
+deep-research-tools = { workspace = true }
+
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+async-trait = { workspace = true }
+
+genai = { workspace = true }
+
+anyhow = { workspace = true }

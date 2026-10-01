@@ -1,11 +1,10 @@
 [package]
-name = "deep-research-react-agent"
+name = "deep-research-runner"
 edition.workspace = true
 version.workspace = true
 
 [dependencies]
 deep-research-arbiter = { workspace = true }
-deep-research-runner = { workspace = true }
 deep-research-tools = { workspace = true }
 
 genai = { workspace = true }
@@ -14,6 +13,6 @@ async-trait = { workspace = true }
 async-stream = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
 
 anyhow = { workspace = true }
+

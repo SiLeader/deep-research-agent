@@ -1,5 +1,5 @@
 [workspace]
-members = ["deep-research-arbiter", "deep-research-react-agent", "deep-research-tools"]
+members = ["deep-research-agent-tools", "deep-research-arbiter", "deep-research-react-agent", "deep-research-runner", "deep-research-tools"]
 
 [workspace.package]
 edition = "2024"
@@ -8,6 +8,7 @@ version = "0.1.0"
 [workspace.dependencies]
 deep-research-arbiter = { path = "deep-research-arbiter" }
 deep-research-react-agent = { path = "deep-research-react-agent" }
+deep-research-runner = { path = "deep-research-runner" }
 deep-research-tools = { path = "deep-research-tools" }
 
 genai = "0.6.5"
@@ -20,6 +21,9 @@ chrono = "0.4.45"
 
 async-trait = "0.1.92"
 tokio = "1.53.1"
+async-stream = "0.3.6"
+futures = "0.3.34"
+futures-util = "0.3.34"
 
 anyhow = "1.0.104"
 

@@ -1,10 +1,11 @@
+#[cfg(feature = "semaphore")]
 pub mod semaphore;
 
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait AgentConcurrencyArbiter {
-    async fn acquire(&self) -> anyhow::Result<ArbiterTabletGuard>;
+pub trait AgentConcurrencyArbiter: Send + Sync {
+    async fn acquire(&self, model: &str) -> anyhow::Result<ArbiterTabletGuard>;
 }
 
 pub struct ArbiterTabletGuard {
