@@ -1,5 +1,5 @@
 [workspace]
-members = ["deep-research-agent-tools", "deep-research-arbiter", "deep-research-orchestrator", "deep-research-react-agent", "deep-research-runner", "deep-research-tools"]
+members = ["deep-research-agent-tools", "deep-research-api", "deep-research-arbiter", "deep-research-orchestrator", "deep-research-react-agent", "deep-research-runner", "deep-research-tools"]
 
 [workspace.package]
 edition = "2024"
@@ -26,6 +26,8 @@ tokio = "1.53.1"
 async-stream = "0.3.6"
 futures = "0.3.34"
 futures-util = "0.3.34"
+
+actix-web = "4.15.0"
 
 anyhow = "1.0.104"
 

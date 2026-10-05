@@ -1,0 +1,14 @@
+[package]
+name = "deep-research-api"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+deep-research-orchestrator = { workspace = true }
+
+actix-web = { workspace = true }
+
+anyhow = { workspace = true }
+
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

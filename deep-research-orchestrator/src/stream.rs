@@ -1,6 +1,7 @@
 use deep_research_react_agent::event::AgentEvent;
 use deep_research_react_agent::stream::AgentStream;
 use futures::Stream;
+use std::collections::HashMap;
 use std::pin::Pin;
 use tokio::sync::RwLock;
 
@@ -10,24 +11,25 @@ pub struct ResearchEvent {
 }
 
 pub struct ResearchEventStream {
-    stream: RwLock<Option<Parent>>,
+    stream: RwLock<HashMap<String, Parent>>,
 }
 
 struct Parent {
+    id: String,
     model: String,
     stream: AgentStream,
 }
 
 impl ResearchEventStream {
-    pub(crate) fn initial(model: String, stream: AgentStream) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            stream: RwLock::new(Some(Parent { model, stream })),
+            stream: RwLock::new(HashMap::new()),
         }
     }
 
-    pub(crate) fn switch_stream(&mut self, model: String, stream: AgentStream) {
+    pub(crate) fn add_stream(&mut self, id: String, model: String, stream: AgentStream) {
         let mut lock = self.stream.blocking_write();
-        *lock = Some(Parent { model, stream });
+        lock.insert(id.clone(), Parent { id, model, stream });
     }
 }
 
@@ -39,16 +41,17 @@ impl Stream for ResearchEventStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         if let Some(parent) = &mut *self.stream.blocking_read() {
-            match Pin::new(&mut parent.stream).poll_next(cx) {
-                std::task::Poll::Ready(Some(event)) => {
-                    std::task::Poll::Ready(Some(ResearchEvent {
+            for (_id, parent) in parent.iter_mut() {
+                if let std::task::Poll::Ready(Some(event)) =
+                    Pin::new(&mut parent.stream).poll_next(cx)
+                {
+                    return std::task::Poll::Ready(Some(ResearchEvent {
                         model: parent.model.clone(),
                         event,
-                    }))
+                    }));
                 }
-                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                std::task::Poll::Pending => std::task::Poll::Pending,
             }
+            std::task::Poll::Pending
         } else {
             std::task::Poll::Ready(None)
         }

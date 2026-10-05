@@ -1,9 +1,8 @@
-mod plan;
-mod research;
+pub mod plan;
+pub mod research;
 mod stream;
 
 use deep_research_react_agent::ReActAgent;
-use deep_research_tools::DeepResearchTools;
 
 pub struct DeepResearchOrchestrator {
     planner_agent: ReActAgent,

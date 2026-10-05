@@ -5,9 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, JsonSchema, Serialize, Deserialize)]
-struct SubmitPlanOutput {
-    research_plans: Vec<ResearchStepPlan>,
-    report_plan: ReportPlan,
+pub struct SubmitPlanOutput {
+    pub(crate) research_plans: Vec<ResearchStepPlan>,
+    pub(crate) report_plan: ReportPlan,
 }
 
 #[derive(Debug, JsonSchema, Serialize, Deserialize)]
@@ -34,7 +34,19 @@ impl DeepResearchOrchestrator {
         ));
     }
 
-    pub async fn plan(&self, question: String) -> AgentStream {
-        self.planner_agent.run_stream(question).await
+    pub async fn plan(&self, question: String) -> anyhow::Result<SubmitPlanOutput> {
+        self.planner_agent.get_output(question).await
+    }
+
+    pub async fn replan(
+        &self,
+        question: String,
+        prev_plan: SubmitPlanOutput,
+    ) -> anyhow::Result<SubmitPlanOutput> {
+        let prompt = format!(
+            "The previous plan was: {:?}. Please provide a new plan for the question: {}",
+            prev_plan, question
+        );
+        self.planner_agent.get_output(prompt).await
     }
 }
