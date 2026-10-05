@@ -1,12 +1,14 @@
 [workspace]
-members = ["deep-research-agent-tools", "deep-research-arbiter", "deep-research-react-agent", "deep-research-runner", "deep-research-tools"]
+members = ["deep-research-agent-tools", "deep-research-arbiter", "deep-research-orchestrator", "deep-research-react-agent", "deep-research-runner", "deep-research-tools"]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
 
 [workspace.dependencies]
+deep-research-agent-tools = { path = "deep-research-agent-tools" }
 deep-research-arbiter = { path = "deep-research-arbiter" }
+deep-research-orchestrator = { path = "deep-research-orchestrator" }
 deep-research-react-agent = { path = "deep-research-react-agent" }
 deep-research-runner = { path = "deep-research-runner" }
 deep-research-tools = { path = "deep-research-tools" }

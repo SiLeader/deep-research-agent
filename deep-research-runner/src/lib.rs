@@ -26,6 +26,10 @@ impl OneshotRunner {
         }
     }
 
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     pub async fn run(&self, messages: Vec<ChatMessage>) -> anyhow::Result<ChatResponse> {
         let _guard = self.arbiter.acquire(&self.model).await?;
 

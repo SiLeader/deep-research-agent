@@ -39,7 +39,7 @@ pub trait DeepResearchTool: Send + Sync + Clone {
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DeepResearchTools {
     tools: HashMap<String, Arc<dyn WrappedTool>>,
 }

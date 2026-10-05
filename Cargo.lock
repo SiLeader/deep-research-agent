@@ -346,10 +346,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "deep-research-react-agent",
+ "deep-research-runner",
  "deep-research-tools",
  "genai",
  "schemars 1.2.2",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -358,6 +360,22 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "tokio",
+]
+
+[[package]]
+name = "deep-research-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "deep-research-agent-tools",
+ "deep-research-arbiter",
+ "deep-research-react-agent",
+ "deep-research-tools",
+ "futures",
+ "schemars 1.2.2",
+ "serde",
  "tokio",
 ]
 
@@ -374,6 +392,8 @@ dependencies = [
  "futures",
  "futures-util",
  "genai",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

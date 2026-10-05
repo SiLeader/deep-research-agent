@@ -2,10 +2,10 @@ mod component;
 pub mod event;
 mod run_future;
 mod run_stream;
-mod stream;
+pub mod stream;
 
 use deep_research_runner::OneshotRunner;
-use deep_research_tools::DeepResearchTools;
+use deep_research_tools::{DeepResearchTool, DeepResearchTools};
 use genai::chat::ToolName;
 use std::collections::HashSet;
 
@@ -30,5 +30,14 @@ impl ReActAgent {
             system_prompt,
             stop_tool_names: stop_tool_names.into_iter().map(|t| t.to_string()).collect(),
         }
+    }
+
+    pub fn model(&self) -> &str {
+        self.oneshot.model()
+    }
+
+    pub fn add_stop_tool(&mut self, tool: impl DeepResearchTool) {
+        self.stop_tool_names.insert(tool.name().to_string());
+        self.tools.add(tool);
     }
 }

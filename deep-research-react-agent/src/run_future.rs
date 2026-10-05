@@ -1,6 +1,7 @@
 use crate::ReActAgent;
 use crate::event::AgentEvent;
 use genai::chat::ToolCall;
+use serde::de::DeserializeOwned;
 
 impl ReActAgent {
     pub async fn run(&self, message: String) -> anyhow::Result<ToolCall> {
@@ -18,5 +19,14 @@ impl ReActAgent {
 
             self.run_tools_single(&mut messages, tool_calls).await;
         }
+    }
+
+    pub async fn get_output<T>(&self, message: String) -> anyhow::Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        Ok(serde_json::from_value(
+            self.run(message).await?.fn_arguments,
+        )?)
     }
 }
