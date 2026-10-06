@@ -2,6 +2,7 @@
 name = "deep-research-arbiter"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }

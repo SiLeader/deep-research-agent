@@ -4,6 +4,7 @@ members = ["deep-research-agent-tools", "deep-research-api", "deep-research-arbi
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 deep-research-api = { path = "deep-research-api" }
@@ -45,6 +46,7 @@ clap = "4.6.7"
 name = "deep-research-agent"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 deep-research-api = { workspace = true }

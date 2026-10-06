@@ -2,6 +2,7 @@
 name = "deep-research-api"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 [dependencies]
 deep-research-orchestrator = { workspace = true }
