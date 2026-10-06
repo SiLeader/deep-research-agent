@@ -35,7 +35,8 @@ impl DeepResearchOrchestrator {
     }
 
     pub async fn plan(&self, question: String) -> anyhow::Result<DeepResearchPlan> {
-        self.planner_agent.get_output(question).await
+        let prompt = create_prompt_for_planning(&question);
+        self.planner_agent.get_output(prompt).await
     }
 
     pub async fn replan(
@@ -43,10 +44,21 @@ impl DeepResearchOrchestrator {
         question: String,
         prev_plan: DeepResearchPlan,
     ) -> anyhow::Result<DeepResearchPlan> {
-        let prompt = format!(
-            "The previous plan was: {:?}. Please provide a new plan for the question: {}",
-            prev_plan, question
-        );
+        let prompt = create_prompt_for_replanning(&question, &prev_plan);
         self.planner_agent.get_output(prompt).await
     }
+}
+
+fn create_prompt_for_planning(question: &str) -> String {
+    format!(
+        "Given the question: {}, please create a research plan and a report plan.",
+        question
+    )
+}
+
+fn create_prompt_for_replanning(question: &str, prev_plan: &DeepResearchPlan) -> String {
+    format!(
+        "The previous plan was: {:?}. Please provide a new plan for the question: {}",
+        prev_plan, question
+    )
 }

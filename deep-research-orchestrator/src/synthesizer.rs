@@ -30,10 +30,7 @@ impl DeepResearchOrchestrator {
         F: Fn(ResearchEvent) -> Fut + Send + Sync,
         Fut: Future<Output = ()> + Send,
     {
-        let prompt = format!(
-            "Given the report plan: {:?} and the research step outputs: {:?}, please synthesize a final report.",
-            plan, outputs
-        );
+        let prompt = create_prompt_for_synthesis(&plan, &outputs);
         let res: FinalReport = self
             .synthesizer_agent
             .run_with_event(prompt, |event| async {
@@ -51,4 +48,11 @@ impl DeepResearchOrchestrator {
         .await;
         Ok(())
     }
+}
+
+fn create_prompt_for_synthesis(plan: &ReportPlan, outputs: &[ResearchStepOutput]) -> String {
+    format!(
+        "Given the report plan: {:?} and the research step outputs: {:?}, please synthesize a final report.",
+        plan, outputs
+    )
 }
