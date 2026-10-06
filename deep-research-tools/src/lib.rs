@@ -54,10 +54,7 @@ impl DeepResearchTools {
     }
 
     pub fn tools(&self) -> anyhow::Result<Vec<Tool>> {
-        self.tools
-            .iter()
-            .map(|(_, t)| t.tool_description())
-            .collect()
+        self.tools.values().map(|t| t.tool_description()).collect()
     }
 
     pub async fn call(

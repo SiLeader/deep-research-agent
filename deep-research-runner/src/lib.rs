@@ -1,6 +1,6 @@
 use deep_research_arbiter::AgentConcurrencyArbiter;
 use genai::Client;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponse, Tool, ToolChoice};
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponse, Tool};
 use std::sync::Arc;
 
 #[derive(Clone)]

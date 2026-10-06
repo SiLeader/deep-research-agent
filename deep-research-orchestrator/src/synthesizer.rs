@@ -1,5 +1,5 @@
 use crate::DeepResearchOrchestrator;
-use crate::plan::{DeepResearchPlan, ReportPlan};
+use crate::plan::ReportPlan;
 use crate::research::ResearchStepOutput;
 use crate::stream::ResearchEvent;
 use deep_research_tools::tools::marker::MarkerTool;
