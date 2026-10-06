@@ -6,7 +6,7 @@ pub mod stream;
 
 use deep_research_runner::OneshotRunner;
 use deep_research_tools::{DeepResearchTool, DeepResearchTools};
-use genai::chat::{Tool, ToolName};
+use genai::chat::ToolName;
 use std::collections::HashSet;
 
 #[derive(Clone)]
@@ -15,7 +15,6 @@ pub struct ReActAgent {
     tools: DeepResearchTools,
     system_prompt: String,
     stop_tool_names: HashSet<String>,
-    tools_descriptions: Vec<Tool>,
 }
 
 impl ReActAgent {
@@ -25,11 +24,11 @@ impl ReActAgent {
         system_prompt: String,
         stop_tool_names: HashSet<ToolName>,
     ) -> anyhow::Result<Self> {
+        tools.tools()?;
         Ok(Self {
             oneshot,
             system_prompt,
             stop_tool_names: stop_tool_names.into_iter().map(|t| t.to_string()).collect(),
-            tools_descriptions: tools.tools()?,
             tools,
         })
     }

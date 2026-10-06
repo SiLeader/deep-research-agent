@@ -24,7 +24,11 @@ impl ReActAgent {
                 };
 
                 let event = self.run_tools_single(&mut messages, tool_calls).await;
+                let finished = matches!(event, AgentEvent::Finish(_));
                 yield event;
+                if finished {
+                    break;
+                }
             }
         })
     }

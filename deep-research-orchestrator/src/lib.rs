@@ -4,7 +4,7 @@ pub mod stream;
 mod synthesizer;
 
 use crate::plan::DeepResearchPlan;
-use crate::research::Researcher;
+use crate::research::{CompletedResearch, Researcher};
 use crate::stream::{ResearchEvent, ResearchEventStream};
 use deep_research_react_agent::ReActAgent;
 use tracing::error;
@@ -49,13 +49,22 @@ impl DeepResearchOrchestrator {
         max_loop_count: usize,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
+            if let Err(e) = plan.validate() {
+                let _ = tx
+                    .send(ResearchEvent::failed(
+                        self.researcher.model().to_string(),
+                        e.to_string(),
+                    ))
+                    .await;
+                return;
+            }
             let mut research_jobs = tokio::task::JoinSet::new();
             for (index, step_plan) in plan.research_plans.into_iter().enumerate() {
                 let tx = tx.clone();
                 let this = self.researcher.clone();
                 research_jobs.spawn(async move {
                     let result = this
-                        .research_step_with_event(step_plan, max_loop_count, move |event| {
+                        .research_step_with_event(step_plan.clone(), max_loop_count, move |event| {
                             let tx = tx.clone();
                             async move {
                                 if let Err(e) = tx.send(event).await {
@@ -64,7 +73,15 @@ impl DeepResearchOrchestrator {
                             }
                         })
                         .await;
-                    result.map(|output| (index, output))
+                    result.map(|output| {
+                        (
+                            index,
+                            CompletedResearch {
+                                research_plan: step_plan,
+                                research_output: output,
+                            },
+                        )
+                    })
                 });
             }
             let mut results = Vec::new();
@@ -116,3 +133,6 @@ impl DeepResearchOrchestrator {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

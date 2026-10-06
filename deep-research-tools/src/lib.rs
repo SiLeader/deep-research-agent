@@ -26,9 +26,12 @@ pub trait DeepResearchTool: Send + Sync + Clone {
     }
 
     fn schema(&self) -> anyhow::Result<Option<serde_json::Value>> {
-        let mut generator = schemars::SchemaGenerator::default();
+        // Inline small tool schemas so local models do not need to resolve $refs.
+        let generator = schemars::generate::SchemaSettings::default()
+            .with(|settings| settings.inline_subschemas = true)
+            .into_generator();
         Ok(Some(serde_json::to_value(
-            <Self as DeepResearchTool>::Args::json_schema(&mut generator),
+            generator.into_root_schema_for::<Self::Args>(),
         )?))
     }
 

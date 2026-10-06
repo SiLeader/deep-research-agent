@@ -20,4 +20,8 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "time"] }
+tokio = { workspace = true, features = ["macros", "time", "net", "io-util"] }
+
+genai = { workspace = true }
+deep-research-runner = { workspace = true }
+deep-research-arbiter = { workspace = true, features = ["semaphore"] }

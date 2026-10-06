@@ -16,10 +16,9 @@ pub(super) async fn research_create(
     orchestrator: Data<DeepResearchOrchestrator>,
     json: Json<ResearchCreateRequest>,
 ) -> actix_web::Result<actix_web::HttpResponse> {
-    let stream = orchestrator
-        .get_ref()
-        .clone()
-        .run_deep_research(json.into_inner().plan);
+    let plan = json.into_inner().plan;
+    plan.validate().map_err(actix_web::error::ErrorBadRequest)?;
+    let stream = orchestrator.get_ref().clone().run_deep_research(plan);
     Ok(research_response(stream, false))
 }
 
@@ -152,7 +151,7 @@ mod tests {
         assert_eq!(decode_events(&chunk), vec![progress]);
         assert_eq!(chunk.iter().filter(|&&b| b == b'\n').count(), 2);
 
-        let completed = json!({ "model": "test-model", "phase": "Synthesized", "data": {} });
+        let completed = json!({ "model": "test-model", "phase": "Synthesized", "data": {"title": "Report", "summary": "Summary", "sections": [], "limitations": []} });
         tx.send(serde_json::from_value(completed.clone()).unwrap())
             .await
             .unwrap();
@@ -176,40 +175,35 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn research_and_synthesis_failures_emit_terminal_event_and_close() {
+    async fn research_failures_emit_terminal_event_and_close() {
         let app = test::init_service(
             App::new()
                 .app_data(Data::new(orchestrator()))
                 .configure(crate::handlers::configure),
         )
         .await;
-        for (steps, phase) in [
-            (json!([{ "goal": "research goal" }]), "Researching"),
-            (json!([]), "Synthesizing"),
-        ] {
-            let request = test::TestRequest::post()
-                .uri("/v1/deep/research")
-                .set_json(json!({ "plan": {
-                    "research_plans": steps, "report_plan": { "goal": "report goal" }
-                }}))
-                .to_request();
-            let response = test::call_service(&app, request).await;
-            assert_eq!(response.status(), StatusCode::OK);
-            let body = tokio::time::timeout(Duration::from_secs(1), test::read_body(response))
-                .await
-                .expect("research stream must close after failure");
-            let events = decode_events(&body);
-            assert_eq!(events.len(), 2);
-            assert_eq!(events[0]["phase"], phase);
-            assert!(
-                events[0]["data"]["Error"]["error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("test runner unavailable")
-            );
-            assert_eq!(events[1]["phase"], "Failed");
-            assert!(events[1]["data"]["error"].is_string());
-        }
+        let request = test::TestRequest::post()
+            .uri("/v1/deep/research")
+            .set_json(json!({ "plan": {
+                "research_plans": [{"goal": "research goal", "scope": "scope", "questions": ["question"]}], "report_plan": { "goal": "report goal", "sections": [{"heading": "Results", "focus": "Answer"}] }
+            }}))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = tokio::time::timeout(Duration::from_secs(1), test::read_body(response))
+            .await
+            .expect("research stream must close after failure");
+        let events = decode_events(&body);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["phase"], "Researching");
+        assert!(
+            events[0]["data"]["Error"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("test runner unavailable")
+        );
+        assert_eq!(events[1]["phase"], "Failed");
+        assert!(events[1]["data"]["error"].is_string());
     }
 
     #[actix_web::test]
@@ -239,6 +233,8 @@ mod tests {
             "{",
             "{}",
             r#"{"plan":{"research_plans":[]}}"#,
+            r#"{"plan":{"research_plans":[],"report_plan":{"goal":"report","sections":[{"heading":"Results","focus":"Answer"}]}}}"#,
+            r#"{"plan":{"research_plans":[{"goal":"goal","scope":"scope","questions":[]}],"report_plan":{"goal":"report","sections":[{"heading":"Results","focus":"Answer"}]}}}"#,
             r#"{"plan":{"research_plans":[{"goal":42}],"report_plan":{"goal":"report"}}}"#,
         ] {
             let request = test::TestRequest::post()

@@ -17,7 +17,11 @@ impl ReActAgent {
                 anyhow::bail!("Finished without finish marker tools invocation");
             };
 
-            self.run_tools_single(&mut messages, tool_calls).await;
+            if let AgentEvent::Finish(tool_call) =
+                self.run_tools_single(&mut messages, tool_calls).await
+            {
+                return Ok(tool_call);
+            }
         }
     }
 

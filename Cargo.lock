@@ -764,9 +764,12 @@ name = "deep-research-orchestrator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "deep-research-arbiter",
  "deep-research-react-agent",
+ "deep-research-runner",
  "deep-research-tools",
  "futures",
+ "genai",
  "schemars 1.2.2",
  "serde",
  "serde_json",
