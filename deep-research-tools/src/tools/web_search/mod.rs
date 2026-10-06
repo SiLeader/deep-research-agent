@@ -22,25 +22,35 @@ impl WebSearchTool {
 
 #[derive(Debug, JsonSchema, Serialize, Deserialize)]
 pub struct WebSearchArgs {
-    #[schemars(description = "The search query to perform.")]
+    #[schemars(
+        description = "A focused web search query containing relevant keywords, names, or constraints for finding sources on the research topic."
+    )]
     query: String,
 }
 
 #[derive(Debug, JsonSchema, Serialize, Deserialize)]
 pub struct WebSearchOutput {
-    #[schemars(description = "The list of search results.")]
+    #[schemars(
+        description = "Matching pages returned by the search service, with URLs, titles, scores, and publication dates. Page bodies are not included."
+    )]
     pages: Vec<WebSearchPage>,
 }
 
 #[derive(Debug, JsonSchema, Serialize, Deserialize)]
 pub struct WebSearchPage {
-    #[schemars(description = "The URL of the page.")]
+    #[schemars(
+        description = "The source page URL, which can be passed to fetch to inspect its contents."
+    )]
     url: String,
-    #[schemars(description = "The title of the page.")]
+    #[schemars(description = "The page title as reported by the search service.")]
     title: String,
-    #[schemars(description = "The relevance score of the page.")]
+    #[schemars(
+        description = "The relevance score supplied by the search service; it is not a measure of source reliability."
+    )]
     score: f32,
-    #[schemars(description = "The published date of the page.")]
+    #[schemars(
+        description = "The page publication timestamp reported by the search service, expressed in UTC."
+    )]
     published_date: DateTime<Utc>,
 }
 
@@ -54,7 +64,12 @@ impl DeepResearchTool for WebSearchTool {
     }
 
     fn description(&self) -> Option<&str> {
-        Some("A tool for performing web searches.")
+        Some(
+            "Purpose: Discover web sources using the configured SearXNG search service.\n\
+             Input: Provide query as a focused search query.\n\
+             Output: Returns pages with URLs, titles, relevance scores, and publication dates; page bodies are not included.\n\
+             When to use: To find candidate sources for a research question. Use fetch on relevant URLs to inspect the source content and assess evidence.",
+        )
     }
 
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output> {

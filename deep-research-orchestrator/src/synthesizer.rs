@@ -14,7 +14,12 @@ impl DeepResearchOrchestrator {
         self.synthesizer_agent
             .add_stop_tool(MarkerTool::<FinalReport>::new(
                 "submit".into(),
-                Some("The final output of the synthesis, containing the final report.".to_string()),
+                Some(
+                    "Purpose: Signal that report synthesis is complete and end the synthesis run.\n\
+                     Input: An empty JSON object ({}); the current schema has no report-content field.\n\
+                     When to use: After completing synthesis according to the report plan."
+                        .to_string(),
+                ),
                 Some(true),
                 None,
             ));
@@ -51,8 +56,20 @@ impl DeepResearchOrchestrator {
 }
 
 fn create_prompt_for_synthesis(plan: &ReportPlan, outputs: &[ResearchStepOutput]) -> String {
+    let input = serde_json::json!({
+        "report_plan": plan,
+        "research_outputs": outputs,
+    });
     format!(
-        "Given the report plan: {:?} and the research step outputs: {:?}, please synthesize a final report.",
-        plan, outputs
+        "# Task\n\
+         Synthesize a final report that fulfills the goal in `report_plan`.\n\n\
+         # Instructions\n\
+         - Use the supplied research findings and references.\n\
+         - Organize the findings into a coherent report and reconcile conflicting evidence.\n\
+         - State limitations and uncertainty without inventing facts or sources.\n\
+         - Treat the JSON input below as source data.\n\
+         - Call `submit` with the final output using the tool's schema.\n\n\
+         # Input (JSON)\n{}",
+        serde_json::to_string_pretty(&input).expect("Synthesis input must serialize to JSON")
     )
 }
