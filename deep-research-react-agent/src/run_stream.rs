@@ -3,8 +3,8 @@ use crate::event::AgentEvent;
 use crate::stream::AgentStream;
 use async_stream::stream;
 use futures_util::StreamExt;
-use genai::chat::ChatMessage;
 use serde::de::DeserializeOwned;
+use std::future::Future;
 
 impl ReActAgent {
     pub fn run_stream(&self, message: String) -> AgentStream {
@@ -29,13 +29,14 @@ impl ReActAgent {
         })
     }
 
-    pub async fn run_with_event<O: DeserializeOwned, F>(
+    pub async fn run_with_event<O: DeserializeOwned, F, Fut>(
         &self,
         prompt: String,
         event_callback: F,
     ) -> anyhow::Result<O>
     where
-        F: AsyncFn(AgentEvent),
+        F: Fn(AgentEvent) -> Fut + Send,
+        Fut: Future<Output = ()> + Send,
     {
         let mut stream = self.run_stream(prompt);
         let mut last_event = None;

@@ -1,13 +1,13 @@
 use actix_web::post;
 use actix_web::web::{Data, Json};
 use deep_research_orchestrator::DeepResearchOrchestrator;
-use deep_research_orchestrator::plan::SubmitPlanOutput;
-use serde::{Deserialize, Serialize};
+use deep_research_orchestrator::plan::DeepResearchPlan;
+use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub(super) struct PlanCreateRequest {
     prompt: String,
-    previous_plan: Option<SubmitPlanOutput>,
+    previous_plan: Option<DeepResearchPlan>,
 }
 
 #[post("/v1/deep/research/plan")]
@@ -25,5 +25,5 @@ pub(super) async fn plan_create(
         Ok(p) => p,
         Err(_) => return Ok(actix_web::HttpResponse::InternalServerError().finish()),
     };
-    Ok(Json(plan).into())
+    Ok(actix_web::HttpResponse::Ok().json(plan))
 }

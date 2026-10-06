@@ -1,85 +1,74 @@
-use crate::DeepResearchOrchestrator;
-use crate::plan::SubmitPlanOutput;
 use crate::research::ResearchStepOutput;
+use crate::synthesizer::FinalReport;
 use deep_research_react_agent::event::AgentEvent;
-use deep_research_react_agent::stream::AgentStream;
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use tracing::error;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchEvent {
     pub(crate) model: String,
-    pub(crate) event: AgentEvent,
+    #[serde(flatten)]
     pub(crate) phase: ResearchPhase,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "phase", content = "data")]
 pub enum ResearchPhase {
-    Researching,
-    GapJudging,
-    Completed,
+    Researching(AgentEvent),
+    GapJudging(AgentEvent),
+    ResearchStepCompleted(ResearchStepOutput),
+    Synthesizing(AgentEvent),
+    Synthesized(FinalReport),
 }
 
 impl ResearchEvent {
     pub(crate) fn from_research_event(model: String, event: AgentEvent) -> Self {
         Self {
             model,
-            event,
-            phase: ResearchPhase::Researching,
+            phase: ResearchPhase::Researching(event),
         }
     }
 
     pub(crate) fn from_gap_judging_event(model: String, event: AgentEvent) -> Self {
         Self {
             model,
-            event,
-            phase: ResearchPhase::GapJudging,
+            phase: ResearchPhase::GapJudging(event),
         }
     }
 
-    pub(crate) fn from_completed_event(model: String, output: ResearchStepOutput) -> Self {
-        todo!()
+    pub(crate) fn from_research_step_completed_event(
+        model: String,
+        output: ResearchStepOutput,
+    ) -> Self {
+        Self {
+            model,
+            phase: ResearchPhase::ResearchStepCompleted(output),
+        }
+    }
+
+    pub(crate) fn from_synthesizing_event(model: String, event: AgentEvent) -> Self {
+        Self {
+            model,
+            phase: ResearchPhase::Synthesizing(event),
+        }
+    }
+
+    pub(crate) fn from_synthesized_event(model: String, report: FinalReport) -> Self {
+        Self {
+            model,
+            phase: ResearchPhase::Synthesized(report),
+        }
     }
 }
 
 pub struct ResearchEventStream {
-    this: DeepResearchOrchestrator,
-    tx: tokio::sync::mpsc::Sender<ResearchEvent>,
     rx: tokio::sync::mpsc::Receiver<ResearchEvent>,
-    jobs: Vec<tokio::task::JoinHandle<anyhow::Result<()>>>,
-}
-
-struct Parent {
-    id: String,
-    model: String,
-    stream: AgentStream,
 }
 
 impl ResearchEventStream {
-    pub(crate) fn new(this: DeepResearchOrchestrator) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
-        Self {
-            this,
-            tx,
-            rx,
-            jobs: Vec::new(),
-        }
-    }
-
-    pub(crate) fn spawn(&mut self, plan: SubmitPlanOutput, max_loop_count: usize) {
-        for step_plan in plan.research_plans {
-            let tx = self.tx.clone();
-            let this = self.this.clone();
-            let handle = tokio::spawn(this.research_step_with_event(
-                step_plan,
-                max_loop_count,
-                async move |event| {
-                    if let Err(e) = tx.send(event).await {
-                        error!("Failed to send research event: {}", e);
-                    }
-                },
-            ));
-            self.jobs.push(handle);
-        }
+    pub(crate) fn new(rx: tokio::sync::mpsc::Receiver<ResearchEvent>) -> Self {
+        Self { rx }
     }
 }
 

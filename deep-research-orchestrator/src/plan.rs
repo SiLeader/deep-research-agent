@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
-pub struct SubmitPlanOutput {
+pub struct DeepResearchPlan {
     pub(crate) research_plans: Vec<ResearchStepPlan>,
     pub(crate) report_plan: ReportPlan,
 }
@@ -16,14 +16,14 @@ pub(crate) struct ResearchStepPlan {
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
-struct ReportPlan {
+pub(crate) struct ReportPlan {
     goal: String,
 }
 
 impl DeepResearchOrchestrator {
     pub(crate) fn prepare_plan_agent(&mut self) {
         self.planner_agent
-            .add_stop_tool(MarkerTool::<SubmitPlanOutput>::new(
+            .add_stop_tool(MarkerTool::<DeepResearchPlan>::new(
             "submit".into(),
             Some(
                 "The final output of the planning, containing the research plans and report plan."
@@ -34,15 +34,15 @@ impl DeepResearchOrchestrator {
         ));
     }
 
-    pub async fn plan(&self, question: String) -> anyhow::Result<SubmitPlanOutput> {
+    pub async fn plan(&self, question: String) -> anyhow::Result<DeepResearchPlan> {
         self.planner_agent.get_output(question).await
     }
 
     pub async fn replan(
         &self,
         question: String,
-        prev_plan: SubmitPlanOutput,
-    ) -> anyhow::Result<SubmitPlanOutput> {
+        prev_plan: DeepResearchPlan,
+    ) -> anyhow::Result<DeepResearchPlan> {
         let prompt = format!(
             "The previous plan was: {:?}. Please provide a new plan for the question: {}",
             prev_plan, question

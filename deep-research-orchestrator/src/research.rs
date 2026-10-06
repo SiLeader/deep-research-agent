@@ -1,11 +1,11 @@
 use crate::DeepResearchOrchestrator;
-use crate::plan::{ResearchStepPlan, SubmitPlanOutput};
+use crate::plan::{DeepResearchPlan, ResearchStepPlan};
 use crate::stream::{ResearchEvent, ResearchEventStream};
+use deep_research_react_agent::ReActAgent;
 use deep_research_tools::tools::marker::MarkerTool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
-use tracing::error;
+use std::future::Future;
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct ResearchStepOutput {
@@ -24,8 +24,21 @@ struct GapJudgeOutput {
     approved: bool,
 }
 
-impl DeepResearchOrchestrator {
-    pub(crate) fn prepare_research_agent(&mut self) {
+#[derive(Clone)]
+pub(crate) struct Researcher {
+    researcher_agent: ReActAgent,
+    gap_judger_agent: ReActAgent,
+}
+
+impl Researcher {
+    pub(crate) fn new(researcher_agent: ReActAgent, gap_judger_agent: ReActAgent) -> Self {
+        Self {
+            researcher_agent,
+            gap_judger_agent,
+        }
+    }
+
+    pub(crate) fn prepare_agent(&mut self) {
         self.researcher_agent
             .add_stop_tool(MarkerTool::<ResearchStepOutput>::new(
                 "submit".into(),
@@ -47,56 +60,45 @@ impl DeepResearchOrchestrator {
         ));
     }
 
-    pub fn research_stream(
+    pub(crate) async fn research_step_with_event<F, Fut>(
         &self,
-        plan: SubmitPlanOutput,
-        max_loop_count: usize,
-    ) -> ResearchEventStream {
-        let mut stream = ResearchEventStream::new(self.clone());
-        stream.spawn(plan, max_loop_count);
-        stream
-    }
-
-    pub(crate) async fn research_step_with_event<F>(
-        self,
         plan: ResearchStepPlan,
         max_loop_count: usize,
         event_callback: F,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<ResearchStepOutput>
     where
-        F: AsyncFn(ResearchEvent),
+        F: Fn(ResearchEvent) -> Fut + Send + Sync,
+        Fut: Future<Output = ()> + Send,
     {
         let mut prev_gap: Option<GapJudgeOutput> = None;
         for _ in 0..max_loop_count {
             let research_out: ResearchStepOutput = self
                 .researcher_agent
-                .run_with_event(plan.to_prompt(prev_gap), async |event| {
+                .run_with_event(plan.to_prompt(prev_gap), |event| {
                     event_callback(ResearchEvent::from_research_event(
                         self.researcher_agent.model().to_string(),
                         event,
                     ))
-                    .await;
                 })
                 .await?;
 
             let gap_out: GapJudgeOutput = self
                 .gap_judger_agent
-                .run_with_event(research_out.to_gap_judger_prompt(), async |event| {
+                .run_with_event(research_out.to_gap_judger_prompt(), |event| {
                     event_callback(ResearchEvent::from_gap_judging_event(
                         self.gap_judger_agent.model().to_string(),
                         event,
                     ))
-                    .await;
                 })
                 .await?;
 
             if gap_out.approved {
-                event_callback(ResearchEvent::from_completed_event(
+                event_callback(ResearchEvent::from_research_step_completed_event(
                     self.researcher_agent.model().to_string(),
-                    research_out,
+                    research_out.clone(),
                 ))
                 .await;
-                return Ok(());
+                return Ok(research_out);
             }
             prev_gap = Some(gap_out);
         }

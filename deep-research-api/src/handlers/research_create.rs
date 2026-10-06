@@ -1,12 +1,12 @@
 use actix_web::post;
 use actix_web::web::Data;
 use deep_research_orchestrator::DeepResearchOrchestrator;
-use deep_research_orchestrator::plan::SubmitPlanOutput;
+use deep_research_orchestrator::plan::DeepResearchPlan;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub(super) struct ResearchCreateRequest {
-    plan: SubmitPlanOutput,
+    plan: DeepResearchPlan,
 }
 
 #[post("/v1/deep/research")]
