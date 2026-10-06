@@ -98,7 +98,7 @@ async fn structured_pipeline_passes_schemas_retry_feedback_and_final_report() {
         let responses = vec![plan.clone(), initial.clone(), rejection.clone(), revised.clone(),
             json!({"approved": true, "gaps": []}), report.clone()];
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}/v1/", listener.local_addr().unwrap());
+        let endpoint = format!("http://{}/api/v1/", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let mut requests = Vec::new();
             for arguments in responses {

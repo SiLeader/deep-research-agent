@@ -11,7 +11,7 @@ pub(super) struct ResearchCreateRequest {
     plan: DeepResearchPlan,
 }
 
-#[post("/v1/deep/research")]
+#[post("/api/v1/deep/research")]
 pub(super) async fn research_create(
     orchestrator: Data<DeepResearchOrchestrator>,
     json: Json<ResearchCreateRequest>,
@@ -183,7 +183,7 @@ mod tests {
         )
         .await;
         let request = test::TestRequest::post()
-            .uri("/v1/deep/research")
+            .uri("/api/v1/deep/research")
             .set_json(json!({ "plan": {
                 "research_plans": [{"goal": "research goal", "scope": "scope", "questions": ["question"]}], "report_plan": { "goal": "report goal", "sections": [{"heading": "Results", "focus": "Answer"}] }
             }}))
@@ -238,7 +238,7 @@ mod tests {
             r#"{"plan":{"research_plans":[{"goal":42}],"report_plan":{"goal":"report"}}}"#,
         ] {
             let request = test::TestRequest::post()
-                .uri("/v1/deep/research")
+                .uri("/api/v1/deep/research")
                 .insert_header(("Content-Type", "application/json"))
                 .set_payload(body)
                 .to_request();
