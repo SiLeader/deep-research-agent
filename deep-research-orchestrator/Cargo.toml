@@ -11,6 +11,7 @@ deep-research-tools = { workspace = true }
 
 serde = { workspace = true, features = ["derive"] }
 schemars = { workspace = true }
+serde_json = { workspace = true }
 
 async-stream = { workspace = true }
 futures = { workspace = true }
