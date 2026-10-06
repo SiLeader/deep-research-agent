@@ -58,6 +58,7 @@ See [config.example.toml](config.example.toml) for the full starting configurati
 | --- | --- |
 | `server.host`, `server.port` | Listen address; defaults to `127.0.0.1:8080`. |
 | `agent.model` | Default model ID for all roles. |
+| `agent.max_llm_calls` | Maximum LLM calls per agent invocation, including Explorer; defaults to `30` and must be positive. |
 | `agent.<role>.model` | Model ID override for `planner`, `research`, `gap_judger`, `explorer`, or `synthesizer`. |
 | `agent.<role>.system_prompt` | Inline system prompt override; omitted prompts use embedded files in `src/assets/`. |
 | `models[].id` | Unique model ID referenced by agent roles. |
@@ -69,6 +70,9 @@ See [config.example.toml](config.example.toml) for the full starting configurati
 | `providers[].api_key_env` | Environment variable used for authentication. |
 | `providers[].endpoint` | Optional API base URL override. |
 | `tools.web_search.searxng.endpoint` | Full SearXNG search URL; the client adds `format=json` and `q`. |
+| `tools.web_fetch.connect_timeout_secs`, `tools.web_search.searxng.connect_timeout_secs` | Connection timeout; defaults to `10` seconds. |
+| `tools.web_fetch.request_timeout_secs`, `tools.web_search.searxng.request_timeout_secs` | Total HTTP request timeout; defaults to `60` seconds. Fetch includes all redirects in this deadline. |
+| `tools.web_fetch.max_body_bytes`, `tools.web_search.searxng.max_body_bytes` | Maximum response body size; defaults to `2097152` bytes (2 MiB). |
 
 Model selection uses the role override first, then `agent.model`. If neither is set, `gap_judger` and `explorer` fall back to the resolved research model. The planner, research, and synthesizer roles require a role model or `agent.model`.
 
@@ -143,7 +147,9 @@ The server sends `: keep-alive` comments every 15 seconds while waiting for even
 ## Current limitations
 
 - Page fetching returns raw response text, including HTML. It does not extract article text or execute JavaScript.
-- The SearXNG response parser currently requires every result to include `url`, `title`, `score`, and `published_date`, with a timestamp parseable as `DateTime<Utc>`. Results missing these fields cause deserialization to fail.
+- Fetch permits only public HTTP(S) destinations, validates DNS answers and redirects, and bypasses environment proxies. Internal, loopback, link-local, and reserved IP ranges are rejected. Configured LLM and SearXNG endpoints may still be internal.
+- SearXNG results require `url`, `title`, and `score`; publication dates (`publishedDate`) may be missing or null. Returned pages expose `published_date` as a UTC timestamp or null.
+- Each agent invocation is bounded by `agent.max_llm_calls`. The separate limit of 10 research/review cycles remains. Web timeouts and body limits are configurable; exceeding them returns a tool error for the agent to handle.
 
 ## Development
 

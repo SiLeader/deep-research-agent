@@ -57,6 +57,7 @@ curl --fail-with-body http://127.0.0.1:8080/version
 | 設定 | 内容 |
 | --- | --- |
 | `server.host`, `server.port` | 待ち受け先。既定値は `127.0.0.1:8080`。 |
+| `agent.max_llm_calls` | Explorerを含む各エージェント実行のLLM呼び出し上限。既定値は `30`。正の値が必要。 |
 | `agent.model` | 全ロールの既定モデル ID。 |
 | `agent.<role>.model` | `planner`、`research`、`gap_judger`、`explorer`、`synthesizer` のモデル ID を上書き。 |
 | `agent.<role>.system_prompt` | システムプロンプトを文字列で指定。省略時は `src/assets/` の組み込みファイルを使用。 |
@@ -71,6 +72,8 @@ curl --fail-with-body http://127.0.0.1:8080/version
 | `tools.web_search.searxng.endpoint` | SearXNG の検索 URL 全体。クライアントが `format=json` と `q` を追加。 |
 
 モデルの選択では、ロールごとの指定、`agent.model` の順で優先します。両方が未設定の場合、`gap_judger` と `explorer` は research ロールで解決されたモデルを使います。planner、research、synthesizer には、ロールごとのモデルか `agent.model` の指定が必要です。
+
+Web取得の上限は `[tools.web_fetch]`、検索の上限は `[tools.web_search.searxng]` で設定します。`connect_timeout_secs` は既定で10秒、`request_timeout_secs` は60秒、`max_body_bytes` は2097152バイト（2 MiB）です。すべて正の値が必要です。fetchの60秒にはリダイレクト先の取得も含みます。
 
 ## HTTP API
 
@@ -143,7 +146,9 @@ data: {"model":"default","phase":"ResearchStepCompleted","data":{"findings":[{"q
 ## 現在の制約
 
 - ページ取得は HTML などを含むレスポンスのテキストをそのまま返します。記事本文の抽出や JavaScript の実行は行いません。
-- SearXNG のレスポンス解析では、各検索結果に `url`、`title`、`score`、`published_date` が必要です。日時は `DateTime<Utc>` として解析可能な形式である必要があります。これらのフィールドが欠けるとデシリアライズに失敗します。
+- fetchは公開HTTP(S) URLだけを許可し、DNS解決後のIPとリダイレクト先も検証します。内部・ループバック・リンクローカル・予約済みIPは拒否し、環境変数のプロキシは使いません。設定したLLMとSearXNGの接続先には内部URLを使用できます。
+- SearXNG結果の `url`、`title`、`score` は必須ですが、公開日時の `publishedDate` は省略・nullを許容します。ツール出力の `published_date` はUTC日時またはnullになります。
+- 各エージェント実行は `agent.max_llm_calls` で制限します。調査・レビューの10回制限は別に維持します。Web取得の時間・本文サイズ超過はツールエラーとしてエージェントに返します。
 
 ## 開発
 

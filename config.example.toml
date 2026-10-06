@@ -5,6 +5,8 @@ port = 8080
 [agent]
 # Model ID used when a role-specific model is omitted.
 model = "default"
+# Maximum LLM calls per agent invocation (including Explorer); must be positive.
+max_llm_calls = 30
 # Optional role-specific overrides. Omitted models use agent.model;
 # omitted system prompts use the embedded Markdown defaults.
 [agent.planner]
@@ -44,3 +46,13 @@ api_key_env = "OPENAI_API_KEY"
 [tools.web_search.searxng]
 # Full search URL. SearXNG must permit JSON responses.
 endpoint = "http://127.0.0.1:8888/search"
+# The configured search endpoint may be internal; its HTTP response is still bounded.
+connect_timeout_secs = 10
+request_timeout_secs = 60
+max_body_bytes = 2097152
+
+# Web request limits must be positive. Fetch allows public HTTP(S) destinations only.
+[tools.web_fetch]
+connect_timeout_secs = 10
+request_timeout_secs = 60
+max_body_bytes = 2097152

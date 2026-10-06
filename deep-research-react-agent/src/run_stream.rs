@@ -15,21 +15,24 @@ impl ReActAgent {
         AgentStream::new(stream! {
             let mut messages = self.create_initial_messages(message);
 
-            loop {
+            for _ in 0..self.max_llm_calls {
                 let event = self.run_llm_single(&mut messages).await;
                 yield event.clone();
 
                 let Some(tool_calls) = event.unwrap_tool_calls() else {
-                    break;
+                    return;
                 };
 
                 let event = self.run_tools_single(&mut messages, tool_calls).await;
                 let finished = matches!(event, AgentEvent::Finish(_));
                 yield event;
                 if finished {
-                    break;
+                    return;
                 }
             }
+            yield AgentEvent::Error(crate::event::ErrorEvent {
+                error: format!("Agent exceeded max_llm_calls ({})", self.max_llm_calls),
+            });
         })
     }
 
@@ -49,7 +52,10 @@ impl ReActAgent {
             event_callback(event).await;
         }
         let Some(AgentEvent::Finish(output)) = last_event else {
-            anyhow::bail!("Researcher agent did not produce any events");
+            if let Some(AgentEvent::Error(error)) = last_event {
+                anyhow::bail!("{}", error.error);
+            }
+            anyhow::bail!("Agent finished without a submit tool call");
         };
         let resource_out: O = serde_json::from_value(output.fn_arguments)?;
         Ok(resource_out)

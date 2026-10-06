@@ -19,10 +19,12 @@ pub(crate) struct ServerConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub(crate) struct AgentConfig {
     pub model: Option<String>,
+    #[serde(default = "default_max_llm_calls")]
+    pub max_llm_calls: usize,
     pub planner: AgentRoleConfig,
     pub research: AgentRoleConfig,
     pub gap_judger: AgentRoleConfig,
@@ -37,6 +39,7 @@ pub(crate) struct AgentRoleConfig {
 }
 
 pub(crate) struct MustAgentConfig {
+    pub max_llm_calls: usize,
     pub planner: MustAgentRoleConfig,
     pub research: MustAgentRoleConfig,
     pub gap_judger: MustAgentRoleConfig,
@@ -65,6 +68,8 @@ fn default_max_concurrency() -> usize {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ToolsConfig {
     pub web_search: WebSearchConfig,
+    #[serde(default)]
+    pub web_fetch: deep_research_tools::tools::WebRequestLimits,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +80,8 @@ pub(crate) struct WebSearchConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SearxngConfig {
     pub endpoint: String,
+    #[serde(flatten)]
+    pub limits: deep_research_tools::tools::WebRequestLimits,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,6 +99,24 @@ pub(crate) enum ProviderType {
     Anthropic,
 }
 
+fn default_max_llm_calls() -> usize {
+    30
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            max_llm_calls: default_max_llm_calls(),
+            planner: Default::default(),
+            research: Default::default(),
+            gap_judger: Default::default(),
+            explorer: Default::default(),
+            synthesizer: Default::default(),
+        }
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -103,6 +128,10 @@ impl Default for ServerConfig {
 
 impl AgentConfig {
     pub fn into_must(self) -> anyhow::Result<MustAgentConfig> {
+        anyhow::ensure!(
+            self.max_llm_calls > 0,
+            "agent.max_llm_calls must be positive"
+        );
         let planner_model = self
             .planner
             .model
@@ -129,6 +158,7 @@ impl AgentConfig {
             .or_else(|| self.model.clone())
             .context("`agent.synthesizer.model` or `agent.model` is not set in config")?;
         Ok(MustAgentConfig {
+            max_llm_calls: self.max_llm_calls,
             planner: MustAgentRoleConfig {
                 model: planner_model,
                 system_prompt: self
@@ -340,5 +370,40 @@ mod tests {
         assert_eq!(config.server.port, 8080);
         assert!(config.agent.model.is_none());
         assert!(config.agent.into_must().is_err());
+    }
+
+    #[test]
+    fn execution_limits_default_override_and_reject_zero() {
+        let config: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        assert_eq!(config.agent.max_llm_calls, 30);
+        assert_eq!(config.tools.web_fetch.max_body_bytes, 2 * 1024 * 1024);
+        assert_eq!(
+            config.tools.web_search.searxng.limits.request_timeout_secs,
+            60
+        );
+        let mut agent = AgentConfig {
+            model: Some("default".into()),
+            max_llm_calls: 2,
+            ..Default::default()
+        };
+        assert_eq!(agent.clone().into_must().unwrap().max_llm_calls, 2);
+        agent.max_llm_calls = 0;
+        assert!(agent.into_must().is_err());
+        let limits: deep_research_tools::tools::WebRequestLimits = toml::from_str(
+            "connect_timeout_secs = 2\nrequest_timeout_secs = 3\nmax_body_bytes = 4",
+        )
+        .unwrap();
+        assert_eq!(limits.connect_timeout_secs, 2);
+        assert_eq!(limits.request_timeout_secs, 3);
+        assert_eq!(limits.max_body_bytes, 4);
+        for text in [
+            "connect_timeout_secs = 0",
+            "request_timeout_secs = 0",
+            "max_body_bytes = 0",
+        ] {
+            let limits: deep_research_tools::tools::WebRequestLimits =
+                toml::from_str(text).unwrap();
+            assert!(limits.validate().is_err());
+        }
     }
 }

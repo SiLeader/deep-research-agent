@@ -153,15 +153,19 @@ async fn run_server(
 
     let mut search_tools = DeepResearchTools::default();
     search_tools.add(
-        WebSearchTool::new_for_searxng(&tools.web_search.searxng.endpoint)
-            .context("Invalid tools.web_search.searxng.endpoint")?,
+        WebSearchTool::new_for_searxng_with_limits(
+            &tools.web_search.searxng.endpoint,
+            tools.web_search.searxng.limits,
+        )
+        .context("Invalid tools.web_search.searxng.endpoint")?,
     );
-    search_tools.add(WebFetchTool::default());
+    search_tools.add(WebFetchTool::new(tools.web_fetch)?);
     let explorer = ExplorerTool::new_with_system_prompt(
         explorer_runner,
         search_tools,
         agent.explorer.system_prompt,
-    )?;
+    )?
+    .with_max_llm_calls(agent.max_llm_calls)?;
     let mut research_tools = DeepResearchTools::default();
     research_tools.add(explorer);
 
@@ -171,25 +175,29 @@ async fn run_server(
             DeepResearchTools::default(),
             agent.planner.system_prompt,
             HashSet::new(),
-        )?,
+        )?
+        .with_max_llm_calls(agent.max_llm_calls)?,
         ReActAgent::new(
             research_runner,
             research_tools,
             agent.research.system_prompt,
             HashSet::new(),
-        )?,
+        )?
+        .with_max_llm_calls(agent.max_llm_calls)?,
         ReActAgent::new(
             gap_judger_runner,
             DeepResearchTools::default(),
             agent.gap_judger.system_prompt,
             HashSet::new(),
-        )?,
+        )?
+        .with_max_llm_calls(agent.max_llm_calls)?,
         ReActAgent::new(
             synthesizer_runner,
             DeepResearchTools::default(),
             agent.synthesizer.system_prompt,
             HashSet::new(),
-        )?,
+        )?
+        .with_max_llm_calls(agent.max_llm_calls)?,
     );
     let host = if server.host.contains(':') && !server.host.starts_with('[') {
         format!("[{}]", server.host)

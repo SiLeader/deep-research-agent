@@ -783,6 +783,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-stream",
+ "deep-research-arbiter",
  "deep-research-runner",
  "deep-research-tools",
  "futures",
@@ -790,6 +791,7 @@ dependencies = [
  "genai",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -808,7 +810,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "encoding_rs",
  "genai",
+ "mime",
  "reqwest",
  "schemars 1.2.2",
  "serde",

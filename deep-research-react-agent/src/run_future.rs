@@ -7,11 +7,14 @@ impl ReActAgent {
     pub async fn run(&self, message: String) -> anyhow::Result<ToolCall> {
         let mut messages = self.create_initial_messages(message);
 
-        loop {
+        for _ in 0..self.max_llm_calls {
             let event = self.run_llm_single(&mut messages).await;
 
             if let AgentEvent::Finish(tool_call) = &event {
                 return Ok(tool_call.clone());
+            }
+            if let AgentEvent::Error(error) = &event {
+                anyhow::bail!("{}", error.error);
             }
             let Some(tool_calls) = event.unwrap_tool_calls() else {
                 anyhow::bail!("Finished without finish marker tools invocation");
@@ -23,6 +26,7 @@ impl ReActAgent {
                 return Ok(tool_call);
             }
         }
+        anyhow::bail!("Agent exceeded max_llm_calls ({})", self.max_llm_calls)
     }
 
     pub async fn get_output<T>(&self, message: String) -> anyhow::Result<T>

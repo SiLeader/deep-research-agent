@@ -44,6 +44,11 @@ struct ExplorerReference {
 }
 
 impl ExplorerTool {
+    pub fn with_max_llm_calls(mut self, max_llm_calls: usize) -> anyhow::Result<Self> {
+        self.agent = self.agent.with_max_llm_calls(max_llm_calls)?;
+        Ok(self)
+    }
+
     pub fn new(runner: OneshotRunner, search_tools: DeepResearchTools) -> anyhow::Result<Self> {
         Self::new_with_system_prompt(
             runner,
