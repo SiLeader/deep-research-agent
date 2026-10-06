@@ -764,9 +764,6 @@ name = "deep-research-orchestrator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-stream",
- "deep-research-agent-tools",
- "deep-research-arbiter",
  "deep-research-react-agent",
  "deep-research-tools",
  "futures",
@@ -783,8 +780,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-stream",
- "async-trait",
- "deep-research-arbiter",
  "deep-research-runner",
  "deep-research-tools",
  "futures",
@@ -792,7 +787,6 @@ dependencies = [
  "genai",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -800,12 +794,7 @@ name = "deep-research-runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-stream",
- "async-trait",
  "deep-research-arbiter",
- "deep-research-tools",
- "futures",
- "futures-util",
  "genai",
 ]
 

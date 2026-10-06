@@ -4,8 +4,6 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-deep-research-agent-tools = { workspace = true }
-deep-research-arbiter = { workspace = true }
 deep-research-react-agent = { workspace = true }
 deep-research-tools = { workspace = true }
 
@@ -13,7 +11,6 @@ serde = { workspace = true, features = ["derive"] }
 schemars = { workspace = true }
 serde_json = { workspace = true }
 
-async-stream = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 
