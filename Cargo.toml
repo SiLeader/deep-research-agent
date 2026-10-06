@@ -33,9 +33,12 @@ anyhow = "1.0.104"
 
 reqwest = "0.13.5"
 
+tracing = "0.1.44"
+
 [package]
 name = "deep-research"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+deep-research-orchestrator = { workspace = true }

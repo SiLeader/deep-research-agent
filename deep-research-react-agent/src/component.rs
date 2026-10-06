@@ -51,37 +51,37 @@ impl ReActAgent {
 
         for tool_call in tool_calls {
             tool_jobs.push(async move {
-                let value = self
+                match self
                     .tools
                     .call(&tool_call.fn_name, tool_call.fn_arguments)
-                    .await?;
-                Ok(match value {
-                    None => None,
-                    Some(value) => Some(genai::chat::ToolResponse {
+                    .await
+                {
+                    Ok(value) => match value {
+                        None => genai::chat::ToolResponse {
+                            call_id: tool_call.call_id,
+                            fn_name: Some(tool_call.fn_name),
+                            content: "Tool not found".to_string(),
+                        },
+                        Some(value) => genai::chat::ToolResponse {
+                            call_id: tool_call.call_id,
+                            fn_name: Some(tool_call.fn_name),
+                            content: value.to_string(),
+                        },
+                    },
+                    Err(e) => genai::chat::ToolResponse {
                         call_id: tool_call.call_id,
                         fn_name: Some(tool_call.fn_name),
-                        content: value.to_string(),
-                    }),
-                })
+                        content: format!("Tool call failed: {}", e),
+                    },
+                }
             });
         }
 
-        match futures::future::join_all(tool_jobs)
-            .await
-            .into_iter()
-            .collect::<anyhow::Result<Vec<_>>>()
-        {
-            Ok(results) => {
-                let tool_responses = results.into_iter().flatten().collect::<Vec<_>>();
-                messages.push(ChatMessage::tool(MessageContent::from_tool_responses(
-                    tool_responses.clone(),
-                )));
+        let tool_responses = futures::future::join_all(tool_jobs).await;
+        messages.push(ChatMessage::tool(MessageContent::from_tool_responses(
+            tool_responses.clone(),
+        )));
 
-                AgentEvent::ToolResponse(event::ToolResponseEvent { tool_responses })
-            }
-            Err(e) => AgentEvent::Error(event::ErrorEvent {
-                error: e.to_string(),
-            }),
-        }
+        AgentEvent::ToolResponse(event::ToolResponseEvent { tool_responses })
     }
 }

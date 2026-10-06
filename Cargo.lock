@@ -600,6 +600,9 @@ dependencies = [
 [[package]]
 name = "deep-research"
 version = "0.1.0"
+dependencies = [
+ "deep-research-orchestrator",
+]
 
 [[package]]
 name = "deep-research-agent-tools"
@@ -651,6 +654,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

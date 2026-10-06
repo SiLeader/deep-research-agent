@@ -4,18 +4,18 @@ use deep_research_tools::tools::marker::MarkerTool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, JsonSchema, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct SubmitPlanOutput {
     pub(crate) research_plans: Vec<ResearchStepPlan>,
     pub(crate) report_plan: ReportPlan,
 }
 
-#[derive(Debug, JsonSchema, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub(crate) struct ResearchStepPlan {
     pub(crate) goal: String,
 }
 
-#[derive(Debug, JsonSchema, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 struct ReportPlan {
     goal: String,
 }

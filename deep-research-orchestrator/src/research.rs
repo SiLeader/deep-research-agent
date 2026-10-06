@@ -1,27 +1,25 @@
 use crate::DeepResearchOrchestrator;
 use crate::plan::{ResearchStepPlan, SubmitPlanOutput};
-use crate::stream::{ResearchEvent, ResearchEventStream, ResearchPhase};
-use deep_research_react_agent::event::AgentEvent;
-use deep_research_react_agent::stream::AgentStream;
+use crate::stream::{ResearchEvent, ResearchEventStream};
 use deep_research_tools::tools::marker::MarkerTool;
-use futures::StreamExt;
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+use tracing::error;
 
-#[derive(Debug, JsonSchema, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct ResearchStepOutput {
     pub(crate) research_step_result: String,
     pub(crate) references: Vec<ResearchReference>,
 }
 
-#[derive(Debug, JsonSchema, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct ResearchReference {
     pub(crate) source: String,
     pub(crate) content: String,
 }
 
-#[derive(Debug, JsonSchema, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 struct GapJudgeOutput {
     approved: bool,
 }
@@ -54,46 +52,41 @@ impl DeepResearchOrchestrator {
         plan: SubmitPlanOutput,
         max_loop_count: usize,
     ) -> ResearchEventStream {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
-
-        let stream = ResearchEventStream::new(rx);
-        for step_plan in plan.research_plans {
-            let fut = self.research_step(step_plan, max_loop_count, |event| tx.send(event));
-            tokio::spawn(fut);
-        }
+        let mut stream = ResearchEventStream::new(self.clone());
+        stream.spawn(plan, max_loop_count);
         stream
     }
 
     pub(crate) async fn research_step_with_event<F>(
-        &self,
+        self,
         plan: ResearchStepPlan,
         max_loop_count: usize,
         event_callback: F,
     ) -> anyhow::Result<()>
     where
-        F: Fn(ResearchEvent),
+        F: AsyncFn(ResearchEvent),
     {
         let mut prev_gap: Option<GapJudgeOutput> = None;
         for _ in 0..max_loop_count {
-            let mut last_event = None;
             let research_out: ResearchStepOutput = self
                 .researcher_agent
-                .run_with_event(plan.to_prompt(prev_gap), |event| {
-                    last_event = Some(event.clone());
+                .run_with_event(plan.to_prompt(prev_gap), async |event| {
                     event_callback(ResearchEvent::from_research_event(
                         self.researcher_agent.model().to_string(),
                         event,
-                    ));
+                    ))
+                    .await;
                 })
                 .await?;
 
             let gap_out: GapJudgeOutput = self
                 .gap_judger_agent
-                .run_with_event(research_out.to_gap_judger_prompt(), |event| {
+                .run_with_event(research_out.to_gap_judger_prompt(), async |event| {
                     event_callback(ResearchEvent::from_gap_judging_event(
                         self.gap_judger_agent.model().to_string(),
                         event,
-                    ));
+                    ))
+                    .await;
                 })
                 .await?;
 
@@ -101,7 +94,8 @@ impl DeepResearchOrchestrator {
                 event_callback(ResearchEvent::from_completed_event(
                     self.researcher_agent.model().to_string(),
                     research_out,
-                ));
+                ))
+                .await;
                 return Ok(());
             }
             prev_gap = Some(gap_out);

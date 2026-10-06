@@ -18,3 +18,5 @@ futures = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 
 anyhow = { workspace = true }
+
+tracing = { workspace = true }

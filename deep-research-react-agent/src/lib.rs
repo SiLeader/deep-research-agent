@@ -36,7 +36,7 @@ impl ReActAgent {
         self.oneshot.model()
     }
 
-    pub fn add_stop_tool(&mut self, tool: impl DeepResearchTool) {
+    pub fn add_stop_tool(&mut self, tool: impl DeepResearchTool + 'static) {
         self.stop_tool_names.insert(tool.name().to_string());
         self.tools.add(tool);
     }

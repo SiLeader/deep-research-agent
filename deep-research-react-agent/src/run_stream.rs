@@ -35,13 +35,13 @@ impl ReActAgent {
         event_callback: F,
     ) -> anyhow::Result<O>
     where
-        F: Fn(AgentEvent),
+        F: AsyncFn(AgentEvent),
     {
         let mut stream = self.run_stream(prompt);
         let mut last_event = None;
         while let Some(event) = stream.next().await {
             last_event = Some(event.clone());
-            event_callback(event);
+            event_callback(event).await;
         }
         let Some(AgentEvent::Finish(output)) = last_event else {
             anyhow::bail!("Researcher agent did not produce any events");

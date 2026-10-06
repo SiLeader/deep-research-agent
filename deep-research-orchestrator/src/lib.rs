@@ -4,6 +4,7 @@ mod stream;
 
 use deep_research_react_agent::ReActAgent;
 
+#[derive(Clone)]
 pub struct DeepResearchOrchestrator {
     planner_agent: ReActAgent,
     researcher_agent: ReActAgent,

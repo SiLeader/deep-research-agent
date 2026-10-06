@@ -1,10 +1,11 @@
+use crate::DeepResearchOrchestrator;
+use crate::plan::SubmitPlanOutput;
 use crate::research::ResearchStepOutput;
 use deep_research_react_agent::event::AgentEvent;
 use deep_research_react_agent::stream::AgentStream;
 use futures::Stream;
-use std::collections::HashMap;
 use std::pin::Pin;
-use tokio::sync::RwLock;
+use tracing::error;
 
 pub struct ResearchEvent {
     pub(crate) model: String,
@@ -36,16 +37,15 @@ impl ResearchEvent {
     }
 
     pub(crate) fn from_completed_event(model: String, output: ResearchStepOutput) -> Self {
-        Self {
-            model,
-            event,
-            phase: ResearchPhase::Completed,
-        }
+        todo!()
     }
 }
 
 pub struct ResearchEventStream {
+    this: DeepResearchOrchestrator,
+    tx: tokio::sync::mpsc::Sender<ResearchEvent>,
     rx: tokio::sync::mpsc::Receiver<ResearchEvent>,
+    jobs: Vec<tokio::task::JoinHandle<anyhow::Result<()>>>,
 }
 
 struct Parent {
@@ -55,8 +55,31 @@ struct Parent {
 }
 
 impl ResearchEventStream {
-    pub(crate) fn new(rx: tokio::sync::mpsc::Receiver<ResearchEvent>) -> Self {
-        Self { rx }
+    pub(crate) fn new(this: DeepResearchOrchestrator) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        Self {
+            this,
+            tx,
+            rx,
+            jobs: Vec::new(),
+        }
+    }
+
+    pub(crate) fn spawn(&mut self, plan: SubmitPlanOutput, max_loop_count: usize) {
+        for step_plan in plan.research_plans {
+            let tx = self.tx.clone();
+            let this = self.this.clone();
+            let handle = tokio::spawn(this.research_step_with_event(
+                step_plan,
+                max_loop_count,
+                async move |event| {
+                    if let Err(e) = tx.send(event).await {
+                        error!("Failed to send research event: {}", e);
+                    }
+                },
+            ));
+            self.jobs.push(handle);
+        }
     }
 }
 
