@@ -105,7 +105,8 @@ mod tests {
             DeepResearchTools::default(),
             String::new(),
             Default::default(),
-        );
+        )
+        .unwrap();
         DeepResearchOrchestrator::new(agent.clone(), agent.clone(), agent.clone(), agent)
     }
 

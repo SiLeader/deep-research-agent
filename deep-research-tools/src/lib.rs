@@ -3,7 +3,7 @@ mod wrap;
 
 use crate::wrap::{Wrapped, WrappedTool};
 use async_trait::async_trait;
-use genai::chat::{ToolConfig, ToolName};
+use genai::chat::{Tool, ToolConfig, ToolName};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -51,6 +51,13 @@ impl DeepResearchTools {
     {
         let name = tool.name().to_string();
         self.tools.insert(name, Arc::new(Wrapped::new(tool)));
+    }
+
+    pub fn tools(&self) -> anyhow::Result<Vec<Tool>> {
+        self.tools
+            .iter()
+            .map(|(_, t)| t.tool_description())
+            .collect()
     }
 
     pub async fn call(

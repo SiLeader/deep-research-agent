@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use reqwest::{Url, Version};
+use reqwest::Url;
 use serde::Deserialize;
 
 #[derive(Clone)]
@@ -18,7 +18,6 @@ pub(super) struct SearxngSearchResult {
     pub url: String,
     pub title: String,
     pub score: f32,
-    pub category: String,
     pub published_date: DateTime<Utc>,
 }
 

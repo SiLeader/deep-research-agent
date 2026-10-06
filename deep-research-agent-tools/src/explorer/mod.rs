@@ -44,7 +44,7 @@ struct ExplorerReference {
 }
 
 impl ExplorerTool {
-    pub fn new(runner: OneshotRunner, search_tools: DeepResearchTools) -> Self {
+    pub fn new(runner: OneshotRunner, search_tools: DeepResearchTools) -> anyhow::Result<Self> {
         Self::new_with_system_prompt(
             runner,
             search_tools,
@@ -56,8 +56,8 @@ impl ExplorerTool {
         runner: OneshotRunner,
         search_tools: DeepResearchTools,
         system_prompt: String,
-    ) -> Self {
-        let mut agent = ReActAgent::new(runner, search_tools, system_prompt, HashSet::new());
+    ) -> anyhow::Result<Self> {
+        let mut agent = ReActAgent::new(runner, search_tools, system_prompt, HashSet::new())?;
         agent.add_stop_tool(MarkerTool::<ExplorerOutput>::new(
             "submit".into(),
             Some(
@@ -69,7 +69,7 @@ impl ExplorerTool {
             Some(true),
             None,
         ));
-        Self { agent }
+        Ok(Self { agent })
     }
 }
 

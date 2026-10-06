@@ -11,7 +11,11 @@ impl ReActAgent {
     }
 
     pub(crate) async fn run_llm_single(&self, messages: &mut Vec<ChatMessage>) -> AgentEvent {
-        match self.oneshot.run(messages.clone()).await {
+        match self
+            .oneshot
+            .run(messages.clone(), self.tools_descriptions.clone())
+            .await
+        {
             Ok(response) => {
                 let content = response.content.clone();
                 messages.push(ChatMessage::assistant(content.clone()));

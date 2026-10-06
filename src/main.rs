@@ -156,7 +156,7 @@ async fn run_server(
         explorer_runner,
         search_tools,
         agent.explorer.system_prompt,
-    );
+    )?;
     let mut research_tools = DeepResearchTools::default();
     research_tools.add(explorer);
 
@@ -166,25 +166,25 @@ async fn run_server(
             DeepResearchTools::default(),
             agent.planner.system_prompt,
             HashSet::new(),
-        ),
+        )?,
         ReActAgent::new(
             research_runner,
             research_tools,
             agent.research.system_prompt,
             HashSet::new(),
-        ),
+        )?,
         ReActAgent::new(
             gap_judger_runner,
             DeepResearchTools::default(),
             agent.gap_judger.system_prompt,
             HashSet::new(),
-        ),
+        )?,
         ReActAgent::new(
             synthesizer_runner,
             DeepResearchTools::default(),
             agent.synthesizer.system_prompt,
             HashSet::new(),
-        ),
+        )?,
     );
     let host = if server.host.contains(':') && !server.host.starts_with('[') {
         format!("[{}]", server.host)

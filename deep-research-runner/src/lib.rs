@@ -1,6 +1,6 @@
 use deep_research_arbiter::AgentConcurrencyArbiter;
 use genai::Client;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponse};
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponse, Tool, ToolChoice};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -30,12 +30,20 @@ impl OneshotRunner {
         &self.model
     }
 
-    pub async fn run(&self, messages: Vec<ChatMessage>) -> anyhow::Result<ChatResponse> {
+    pub async fn run(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<Tool>,
+    ) -> anyhow::Result<ChatResponse> {
         let _guard = self.arbiter.acquire(&self.model).await?;
 
         let res = self
             .client
-            .exec_chat(&self.model, ChatRequest::new(messages), Some(&self.options))
+            .exec_chat(
+                &self.model,
+                ChatRequest::new(messages).with_tools(tools),
+                Some(&self.options),
+            )
             .await?;
 
         Ok(res)
