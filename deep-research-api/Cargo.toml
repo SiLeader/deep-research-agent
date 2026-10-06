@@ -12,3 +12,15 @@ anyhow = { workspace = true }
 
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+futures-util = { workspace = true }
+async-stream = { workspace = true }
+tokio = { workspace = true, features = ["macros", "time"] }
+
+[dev-dependencies]
+deep-research-arbiter = { workspace = true }
+deep-research-react-agent = { workspace = true }
+deep-research-runner = { workspace = true }
+deep-research-tools = { workspace = true }
+genai = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

@@ -1,6 +1,5 @@
-use crate::DeepResearchOrchestrator;
-use crate::plan::{DeepResearchPlan, ResearchStepPlan};
-use crate::stream::{ResearchEvent, ResearchEventStream};
+use crate::plan::ResearchStepPlan;
+use crate::stream::ResearchEvent;
 use deep_research_react_agent::ReActAgent;
 use deep_research_tools::tools::marker::MarkerTool;
 use schemars::JsonSchema;
@@ -31,6 +30,10 @@ pub(crate) struct Researcher {
 }
 
 impl Researcher {
+    pub(crate) fn model(&self) -> &str {
+        self.researcher_agent.model()
+    }
+
     pub(crate) fn new(researcher_agent: ReActAgent, gap_judger_agent: ReActAgent) -> Self {
         Self {
             researcher_agent,

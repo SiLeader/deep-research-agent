@@ -625,9 +625,18 @@ version = "0.1.0"
 dependencies = [
  "actix-web",
  "anyhow",
+ "async-stream",
+ "async-trait",
+ "deep-research-arbiter",
  "deep-research-orchestrator",
+ "deep-research-react-agent",
+ "deep-research-runner",
+ "deep-research-tools",
+ "futures-util",
+ "genai",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
