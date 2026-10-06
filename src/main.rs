@@ -9,7 +9,7 @@ use deep_research_runner::OneshotRunner;
 use deep_research_tools::DeepResearchTools;
 use deep_research_tools::tools::{web_fetch::WebFetchTool, web_search::WebSearchTool};
 use genai::adapter::AdapterKind;
-use genai::chat::ChatOptions;
+use genai::chat::{ChatOptions, ToolChoice};
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden, ServiceTarget};
 use std::collections::{HashMap, HashSet};
@@ -120,7 +120,12 @@ fn build_runners(
             .build();
         runners.insert(
             model.id.clone(),
-            OneshotRunner::new(model.id, client, arbiter.clone(), ChatOptions::default()),
+            OneshotRunner::new(
+                model.id,
+                client,
+                arbiter.clone(),
+                ChatOptions::default().with_tool_choice(ToolChoice::Required),
+            ),
         );
     }
     Ok(runners)
