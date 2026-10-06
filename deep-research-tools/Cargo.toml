@@ -16,3 +16,6 @@ genai = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 
 chrono = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

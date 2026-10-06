@@ -170,3 +170,65 @@ impl ResearchStepPlan {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn input(prompt: &str) -> Value {
+        serde_json::from_str(prompt.split_once("# Input (JSON)\n").unwrap().1).unwrap()
+    }
+
+    #[test]
+    fn initial_research_has_no_previous_gap_analysis() {
+        let plan = ResearchStepPlan {
+            goal: "調査\n\"引用\"".into(),
+        };
+        assert_eq!(
+            input(&plan.to_prompt(None)),
+            json!({
+                "research_plan": {"goal": plan.goal}, "previous_gap_analysis": null
+            })
+        );
+    }
+
+    #[test]
+    fn retry_includes_rejected_gap_analysis() {
+        let plan = ResearchStepPlan {
+            goal: "goal".into(),
+        };
+        assert_eq!(
+            input(&plan.to_prompt(Some(GapJudgeOutput { approved: false }))),
+            json!({
+                "research_plan": {"goal": "goal"}, "previous_gap_analysis": {"approved": false}
+            })
+        );
+    }
+
+    #[test]
+    fn gap_review_includes_goal_findings_and_all_references() {
+        let output = ResearchStepOutput {
+            research_step_result: "finding\n\"引用\"".into(),
+            references: vec![
+                ResearchReference {
+                    source: "https://example.com/first".into(),
+                    content: "evidence one".into(),
+                },
+                ResearchReference {
+                    source: "https://example.com/second".into(),
+                    content: "evidence two".into(),
+                },
+            ],
+        };
+        let plan = ResearchStepPlan {
+            goal: "goal".into(),
+        };
+        assert_eq!(
+            input(&output.to_gap_judger_prompt(&plan)),
+            json!({
+                "research_plan": {"goal": "goal"}, "research_output": output
+            })
+        );
+    }
+}

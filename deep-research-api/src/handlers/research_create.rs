@@ -125,7 +125,7 @@ mod tests {
         let stream = futures_util::stream::unfold(rx, |mut rx| async move {
             rx.recv().await.map(|event| (event, rx))
         });
-        let response = research_response(stream, true);
+        let response = research_response(stream, false);
         assert_eq!(
             response.headers().get("Content-Type").unwrap(),
             "text/event-stream"
@@ -167,6 +167,12 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    #[actix_web::test]
+    async fn buffering_header_is_omitted_when_accel_buffering_is_enabled() {
+        let response = research_response(futures_util::stream::empty::<ResearchEvent>(), true);
+        assert!(!response.headers().contains_key("X-Accel-Buffering"));
     }
 
     #[actix_web::test]

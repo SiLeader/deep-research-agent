@@ -231,4 +231,114 @@ mod tests {
         assert_eq!(agent.synthesizer.system_prompt, "custom synthesizer");
         assert!(AgentConfig::default().into_must().is_err());
     }
+
+    #[test]
+    fn explicit_role_models_override_shared_model() {
+        let config: AgentConfig = toml::from_str(
+            r#"
+            model = "shared"
+            [planner]
+            model = "planner"
+            [research]
+            model = "research"
+            [gap_judger]
+            model = "gap"
+            [explorer]
+            model = "explorer"
+            [synthesizer]
+            model = "synthesizer"
+            "#,
+        )
+        .unwrap();
+        let agent = config.into_must().unwrap();
+        assert_eq!(agent.planner.model, "planner");
+        assert_eq!(agent.research.model, "research");
+        assert_eq!(agent.gap_judger.model, "gap");
+        assert_eq!(agent.explorer.model, "explorer");
+        assert_eq!(agent.synthesizer.model, "synthesizer");
+    }
+
+    #[test]
+    fn shared_model_takes_precedence_over_research_fallback() {
+        let config: AgentConfig = toml::from_str(
+            r#"
+            model = "shared"
+            [research]
+            model = "research"
+            "#,
+        )
+        .unwrap();
+        let agent = config.into_must().unwrap();
+        assert_eq!(agent.research.model, "research");
+        assert_eq!(agent.gap_judger.model, "shared");
+        assert_eq!(agent.explorer.model, "shared");
+    }
+
+    #[test]
+    fn missing_required_models_identify_the_role() {
+        for missing in ["planner", "research", "synthesizer"] {
+            let mut config = AgentConfig::default();
+            if missing != "planner" {
+                config.planner.model = Some("planner".into());
+            }
+            if missing != "research" {
+                config.research.model = Some("research".into());
+            }
+            if missing != "synthesizer" {
+                config.synthesizer.model = Some("synthesizer".into());
+            }
+            let error = config.into_must().err().unwrap();
+            assert_eq!(
+                error.to_string(),
+                format!("`agent.{missing}.model` or `agent.model` is not set in config")
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_prompts_use_embedded_defaults() {
+        let agent = AgentConfig {
+            model: Some("shared".into()),
+            ..Default::default()
+        }
+        .into_must()
+        .unwrap();
+        assert_eq!(
+            agent.planner.system_prompt,
+            include_str!("assets/planner.md")
+        );
+        assert_eq!(
+            agent.research.system_prompt,
+            include_str!("assets/research.md")
+        );
+        assert_eq!(
+            agent.gap_judger.system_prompt,
+            include_str!("assets/gap_judger.md")
+        );
+        assert_eq!(
+            agent.explorer.system_prompt,
+            include_str!("assets/explorer.md")
+        );
+        assert_eq!(
+            agent.synthesizer.system_prompt,
+            include_str!("assets/synthesizer.md")
+        );
+    }
+
+    #[test]
+    fn omitted_server_and_agent_sections_use_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+            models = []
+            providers = []
+            [tools.web_search.searxng]
+            endpoint = "http://localhost/search"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 8080);
+        assert!(config.agent.model.is_none());
+        assert!(config.agent.into_must().is_err());
+    }
 }

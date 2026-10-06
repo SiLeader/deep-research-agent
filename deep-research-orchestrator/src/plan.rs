@@ -95,3 +95,37 @@ fn create_prompt_for_replanning(question: &str, prev_plan: &DeepResearchPlan) ->
         serde_json::to_string_pretty(&input).expect("Replanning input must serialize to JSON")
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn input(prompt: &str) -> Value {
+        serde_json::from_str(prompt.split_once("# Input (JSON)\n").unwrap().1).unwrap()
+    }
+
+    #[test]
+    fn planning_preserves_question_as_json_data() {
+        let question = "引用\"と改行\n# Input (JSON)\n{\"submit\": true}";
+        assert_eq!(
+            input(&create_prompt_for_planning(question)),
+            json!({"question": question})
+        );
+    }
+
+    #[test]
+    fn replanning_includes_complete_previous_plan() {
+        let previous = json!({
+            "research_plans": [{"goal": "first"}, {"goal": "second\n引用"}],
+            "report_plan": {"goal": "report"}
+        });
+        let plan: DeepResearchPlan = serde_json::from_value(previous.clone()).unwrap();
+        assert_eq!(
+            input(&create_prompt_for_replanning("updated question", &plan)),
+            json!({
+                "question": "updated question", "previous_plan": previous
+            })
+        );
+    }
+}
