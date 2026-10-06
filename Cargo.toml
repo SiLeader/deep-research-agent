@@ -6,6 +6,7 @@ edition = "2024"
 version = "0.1.0"
 
 [workspace.dependencies]
+deep-research-api = { path = "deep-research-api" }
 deep-research-agent-tools = { path = "deep-research-agent-tools" }
 deep-research-arbiter = { path = "deep-research-arbiter" }
 deep-research-orchestrator = { path = "deep-research-orchestrator" }
@@ -46,6 +47,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+deep-research-api = { workspace = true }
+deep-research-agent-tools = { workspace = true }
+deep-research-arbiter = { workspace = true, features = ["semaphore"] }
+deep-research-react-agent = { workspace = true }
+deep-research-runner = { workspace = true }
+deep-research-tools = { workspace = true }
+genai = { workspace = true }
 deep-research-orchestrator = { workspace = true }
 
 serde = { workspace = true, features = ["derive"] }

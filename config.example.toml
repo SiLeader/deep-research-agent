@@ -1,0 +1,46 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[agent]
+# Model ID used when a role-specific model is omitted.
+model = "default"
+# Optional role-specific overrides. Omitted models use agent.model;
+# omitted system prompts use the embedded Markdown defaults.
+[agent.planner]
+# model = "default"
+# system_prompt = "..."
+
+[agent.research]
+# model = "default"
+# system_prompt = "..."
+
+[agent.gap_judger]
+# model = "default"
+# system_prompt = "..."
+
+[agent.explorer]
+# model = "default"
+# system_prompt = "..."
+
+[agent.synthesizer]
+# model = "default"
+# system_prompt = "..."
+
+[[models]]
+id = "default"
+provider = "openai"
+name = "your-model-name"
+# Defaults to 1; shared by all agent roles using this model ID.
+max_concurrency = 1
+
+[[providers]]
+id = "openai"
+type = "OpenAI"
+api_key_env = "OPENAI_API_KEY"
+# Optional API base URL, including any required path and trailing slash.
+# endpoint = "http://127.0.0.1:8000/v1/"
+
+[tools.web_search.searxng]
+# Full search URL. SearXNG must permit JSON responses.
+endpoint = "http://127.0.0.1:8888/search"

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -5,25 +6,80 @@ pub(crate) struct Config {
     #[serde(default)]
     pub server: ServerConfig,
     pub models: Vec<ModelConfig>,
+    #[serde(default)]
+    pub agent: AgentConfig,
+    pub providers: Vec<ProviderConfig>,
+    pub tools: ToolsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub(crate) struct ServerConfig {
-    #[serde(default)]
     pub host: String,
-    #[serde(default)]
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct AgentConfig {
+    pub model: Option<String>,
+    pub planner: AgentRoleConfig,
+    pub research: AgentRoleConfig,
+    pub gap_judger: AgentRoleConfig,
+    pub explorer: AgentRoleConfig,
+    pub synthesizer: AgentRoleConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct AgentRoleConfig {
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+}
+
+pub(crate) struct MustAgentConfig {
+    pub planner: MustAgentRoleConfig,
+    pub research: MustAgentRoleConfig,
+    pub gap_judger: MustAgentRoleConfig,
+    pub explorer: MustAgentRoleConfig,
+    pub synthesizer: MustAgentRoleConfig,
+}
+
+pub(crate) struct MustAgentRoleConfig {
+    pub model: String,
+    pub system_prompt: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ModelConfig {
+    pub id: String,
     pub provider: String,
     pub name: String,
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: usize,
+}
+
+fn default_max_concurrency() -> usize {
+    1
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ToolsConfig {
+    pub web_search: WebSearchConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct WebSearchConfig {
+    pub searxng: SearxngConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SearxngConfig {
+    pub endpoint: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ProviderConfig {
-    pub name: String,
+    pub id: String,
     #[serde(rename = "type")]
     pub provider_type: ProviderType,
     pub api_key_env: String,
@@ -45,10 +101,134 @@ impl Default for ServerConfig {
     }
 }
 
+impl AgentConfig {
+    pub fn into_must(self) -> anyhow::Result<MustAgentConfig> {
+        let planner_model = self
+            .planner
+            .model
+            .or_else(|| self.model.clone())
+            .context("`agent.planner.model` or `agent.model` is not set in config")?;
+        let research_model = self
+            .research
+            .model
+            .or_else(|| self.model.clone())
+            .context("`agent.research.model` or `agent.model` is not set in config")?;
+        let gap_judger_model = self
+            .gap_judger
+            .model
+            .or_else(|| self.model.clone())
+            .unwrap_or_else(|| research_model.clone());
+        let explorer_model = self
+            .explorer
+            .model
+            .or_else(|| self.model.clone())
+            .unwrap_or_else(|| research_model.clone());
+        let synthesizer_model = self
+            .synthesizer
+            .model
+            .or_else(|| self.model.clone())
+            .context("`agent.synthesizer.model` or `agent.model` is not set in config")?;
+        Ok(MustAgentConfig {
+            planner: MustAgentRoleConfig {
+                model: planner_model,
+                system_prompt: self
+                    .planner
+                    .system_prompt
+                    .unwrap_or_else(|| include_str!("assets/planner.md").to_string()),
+            },
+            research: MustAgentRoleConfig {
+                model: research_model,
+                system_prompt: self
+                    .research
+                    .system_prompt
+                    .unwrap_or_else(|| include_str!("assets/research.md").to_string()),
+            },
+            gap_judger: MustAgentRoleConfig {
+                model: gap_judger_model,
+                system_prompt: self
+                    .gap_judger
+                    .system_prompt
+                    .unwrap_or_else(|| include_str!("assets/gap_judger.md").to_string()),
+            },
+            explorer: MustAgentRoleConfig {
+                model: explorer_model,
+                system_prompt: self
+                    .explorer
+                    .system_prompt
+                    .unwrap_or_else(|| include_str!("assets/explorer.md").to_string()),
+            },
+            synthesizer: MustAgentRoleConfig {
+                model: synthesizer_model,
+                system_prompt: self
+                    .synthesizer
+                    .system_prompt
+                    .unwrap_or_else(|| include_str!("assets/synthesizer.md").to_string()),
+            },
+        })
+    }
+}
+
 impl Config {
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
         let config_str = std::fs::read_to_string(path)?;
         let config: Config = toml::from_str(&config_str)?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_and_partial_server_settings() {
+        let text = include_str!("../config.example.toml")
+            .replace("host = \"127.0.0.1\"\n", "")
+            .replace("max_concurrency = 1\n", "");
+        let config: Config = toml::from_str(&text).unwrap();
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.models[0].max_concurrency, 1);
+        let agent = config.agent.into_must().unwrap();
+        assert_eq!(agent.planner.model, "default");
+        assert_eq!(agent.research.model, "default");
+        assert_eq!(agent.gap_judger.model, "default");
+        assert_eq!(agent.explorer.model, "default");
+        assert_eq!(agent.synthesizer.model, "default");
+        assert_eq!(
+            agent.explorer.system_prompt,
+            include_str!("assets/explorer.md")
+        );
+    }
+
+    #[test]
+    fn role_overrides_and_research_fallbacks() {
+        let agent: AgentConfig = toml::from_str(
+            r#"
+            [planner]
+            model = "planner"
+            system_prompt = "custom planner"
+            [research]
+            model = "research"
+            system_prompt = "custom research"
+            [gap_judger]
+            system_prompt = "custom gap"
+            [explorer]
+            system_prompt = "custom explorer"
+            [synthesizer]
+            model = "synthesizer"
+            system_prompt = "custom synthesizer"
+        "#,
+        )
+        .unwrap();
+        let agent = agent.into_must().unwrap();
+        assert_eq!(agent.gap_judger.model, "research");
+        assert_eq!(agent.explorer.model, "research");
+        assert_eq!(agent.planner.system_prompt, "custom planner");
+        assert_eq!(agent.research.system_prompt, "custom research");
+        assert_eq!(agent.gap_judger.system_prompt, "custom gap");
+        assert_eq!(agent.explorer.system_prompt, "custom explorer");
+        assert_eq!(agent.synthesizer.system_prompt, "custom synthesizer");
+        assert!(AgentConfig::default().into_must().is_err());
     }
 }

@@ -32,12 +32,19 @@ struct ExplorerReference {
 
 impl ExplorerTool {
     pub fn new(runner: OneshotRunner, search_tools: DeepResearchTools) -> Self {
-        let mut agent = ReActAgent::new(
+        Self::new_with_system_prompt(
             runner,
             search_tools,
             "You are an explorer agent that gathers information and provides answers with references.".to_string(),
-            HashSet::new(),
-        );
+        )
+    }
+
+    pub fn new_with_system_prompt(
+        runner: OneshotRunner,
+        search_tools: DeepResearchTools,
+        system_prompt: String,
+    ) -> Self {
+        let mut agent = ReActAgent::new(runner, search_tools, system_prompt, HashSet::new());
         agent.add_stop_tool(MarkerTool::<ExplorerOutput>::new(
             "submit".into(),
             Some(
