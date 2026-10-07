@@ -19,12 +19,11 @@ pub(super) async fn research_create(
     let plan = json.into_inner().plan;
     plan.validate().map_err(actix_web::error::ErrorBadRequest)?;
     let stream = orchestrator.get_ref().clone().run_deep_research(plan);
-    Ok(research_response(stream, false))
+    Ok(research_response(stream))
 }
 
 fn research_response(
     stream: impl Stream<Item = ResearchEvent> + 'static,
-    use_accel_buffering: bool,
 ) -> actix_web::HttpResponse {
     let body = async_stream::stream! {
         let mut stream = std::pin::pin!(stream);
@@ -53,22 +52,9 @@ fn research_response(
     actix_web::HttpResponse::Ok()
         .content_type("text/event-stream")
         .insert_header(("Cache-Control", "no-cache"))
-        .insert_header_if(!use_accel_buffering, ("X-Accel-Buffering", "no"))
+        // Disable proxy buffering (e.g. nginx) so events arrive as they are produced.
+        .insert_header(("X-Accel-Buffering", "no"))
         .streaming(body)
-}
-
-trait InsertHeaderIf {
-    fn insert_header_if(&mut self, condition: bool, header: (&str, &str)) -> &mut Self;
-}
-
-impl InsertHeaderIf for actix_web::HttpResponseBuilder {
-    fn insert_header_if(&mut self, condition: bool, header: (&str, &str)) -> &mut Self {
-        if condition {
-            self.insert_header(header)
-        } else {
-            self
-        }
-    }
 }
 
 #[cfg(test)]
@@ -124,7 +110,7 @@ mod tests {
         let stream = futures_util::stream::unfold(rx, |mut rx| async move {
             rx.recv().await.map(|event| (event, rx))
         });
-        let response = research_response(stream, false);
+        let response = research_response(stream);
         assert_eq!(
             response.headers().get("Content-Type").unwrap(),
             "text/event-stream"
@@ -169,12 +155,6 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn buffering_header_is_omitted_when_accel_buffering_is_enabled() {
-        let response = research_response(futures_util::stream::empty::<ResearchEvent>(), true);
-        assert!(!response.headers().contains_key("X-Accel-Buffering"));
-    }
-
-    #[actix_web::test]
     async fn research_failures_emit_terminal_event_and_close() {
         let app = test::init_service(
             App::new()
@@ -210,7 +190,7 @@ mod tests {
     async fn idle_stream_emits_keep_alive_comments() {
         tokio::time::pause();
         let stream = futures_util::stream::pending::<ResearchEvent>();
-        let mut body = pin!(research_response(stream, false).into_body());
+        let mut body = pin!(research_response(stream).into_body());
         for _ in 0..2 {
             let chunk = futures_util::future::poll_fn(|cx| body.as_mut().poll_next(cx))
                 .await
@@ -252,5 +232,19 @@ mod tests {
         let response =
             test::call_service(&app, test::TestRequest::get().uri("/version").to_request()).await;
         assert_eq!(response.status(), StatusCode::OK);
+        let request = test::TestRequest::post()
+            .uri("/api/v1/deep/research/plan")
+            .set_json(json!({"prompt": "revise", "previous_plan": {
+                "research_plans": [], "report_plan": {"goal": "report", "sections": [{"heading": "Results", "focus": "Answer"}]}
+            }}))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let request = test::TestRequest::post()
+            .uri("/api/v1/deep/research/plan")
+            .set_json(json!({"prompt": "plan"}))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

@@ -1,12 +1,23 @@
 [server]
 host = "127.0.0.1"
 port = 8080
+# Optional: require `Authorization: Bearer <token>` on /api/ routes, reading the
+# token from this environment variable. Set it before exposing the server.
+# api_key_env = "DEEP_RESEARCH_API_KEY"
 
 [agent]
 # Model ID used when a role-specific model is omitted.
 model = "default"
 # Maximum LLM calls per agent invocation (including Explorer); must be positive.
 max_llm_calls = 30
+# Research/review cycles per research step before the step fails.
+max_research_loops = 10
+# LLM requests per research request across all agents, Explorer, and retries.
+max_total_llm_calls = 2000
+# Deadline for a whole research request, including synthesis.
+research_timeout_secs = 3600
+# Tool output kept in each agent's conversation; older outputs are elided first.
+max_tool_context_chars = 200000
 # Optional role-specific overrides. Omitted models use agent.model;
 # omitted system prompts use the embedded Markdown defaults.
 [agent.planner]
@@ -38,6 +49,8 @@ max_concurrency = 1
 # Deadline for each chat request, after acquiring the model concurrency slot.
 # Defaults to 120 seconds; must be positive. Embedding uses its own timeout below.
 request_timeout_secs = 120
+# Retries for timeouts, connection errors, and HTTP 408/409/425/429/5xx.
+max_retries = 3
 
 [[providers]]
 id = "openai"
@@ -74,6 +87,7 @@ max_top_k = 20
 # [tools.fetched.embedding]
 # model = "embedding"
 # request_timeout_secs = 60
+# batch_size = 64 # inputs per embedding request
 
 # Optional, independent of embedding. Base URL: /rerank is appended once.
 # [tools.fetched.reranker]

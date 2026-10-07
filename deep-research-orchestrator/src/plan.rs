@@ -101,12 +101,12 @@ impl DeepResearchOrchestrator {
     }
 
     pub async fn plan(&self, question: String) -> anyhow::Result<DeepResearchPlan> {
-        let plan: DeepResearchPlan = self
-            .planner_agent
-            .get_output(create_prompt_for_planning(&question))
-            .await?;
-        plan.validate()?;
-        Ok(plan)
+        self.planner_agent
+            .get_output_validated(
+                create_prompt_for_planning(&question),
+                |plan: &DeepResearchPlan| plan.validate(),
+            )
+            .await
     }
 
     pub async fn replan(
@@ -114,12 +114,12 @@ impl DeepResearchOrchestrator {
         question: String,
         prev_plan: DeepResearchPlan,
     ) -> anyhow::Result<DeepResearchPlan> {
-        let plan: DeepResearchPlan = self
-            .planner_agent
-            .get_output(create_prompt_for_replanning(&question, &prev_plan))
-            .await?;
-        plan.validate()?;
-        Ok(plan)
+        self.planner_agent
+            .get_output_validated(
+                create_prompt_for_replanning(&question, &prev_plan),
+                |plan: &DeepResearchPlan| plan.validate(),
+            )
+            .await
     }
 }
 

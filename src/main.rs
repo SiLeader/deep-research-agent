@@ -77,6 +77,7 @@ struct ModelRuntime {
     client: Client,
     provider_type: config::ProviderType,
     request_timeout_secs: u64,
+    max_retries: u32,
 }
 
 struct ModelServices {
@@ -97,7 +98,8 @@ impl ModelServices {
                         self.arbiter.clone(),
                         ChatOptions::default().with_tool_choice(ToolChoice::Required),
                     )
-                    .with_request_timeout(runtime.request_timeout_secs)?,
+                    .with_request_timeout(runtime.request_timeout_secs)?
+                    .with_max_retries(runtime.max_retries),
                 ))
             })
             .collect()
@@ -167,6 +169,7 @@ fn build_model_services(
                 client,
                 provider_type: provider.provider_type.clone(),
                 request_timeout_secs: model.request_timeout_secs,
+                max_retries: model.max_retries,
             },
         );
     }
@@ -201,7 +204,8 @@ impl RetrievalModels {
                 );
                 Embedder::new(embedding.model.clone(), runtime.client.clone())
                     .with_arbiter(services.arbiter.clone())
-                    .with_request_timeout(embedding.request_timeout_secs)
+                    .with_request_timeout(embedding.request_timeout_secs)?
+                    .with_batch_size(embedding.batch_size)
             })
             .transpose()?;
         let reranker = settings
@@ -227,25 +231,20 @@ async fn build_search_tools(
     retrieval: RetrievalModels,
 ) -> anyhow::Result<DeepResearchTools> {
     tools.fetched.validate()?;
-    let db = Arc::new(
-        FetchedDb::new(
-            tools.fetched.search.chunk_size,
-            retrieval.embedder,
-            retrieval.reranker,
-        )
-        .await?,
-    );
+    let search = tools.fetched.search();
+    let db =
+        Arc::new(FetchedDb::new(search.chunk_size, retrieval.embedder, retrieval.reranker).await?);
     let mut registry = DeepResearchTools::default();
     registry.add(
         WebSearchTool::new_for_searxng_with_limits(
             &tools.web_search.searxng.endpoint,
-            tools.web_search.searxng.limits,
+            tools.web_search.searxng.limits(),
             db.clone(),
         )
         .context("Invalid tools.web_search.searxng.endpoint")?,
     );
     registry.add(WebFetchTool::new(tools.web_fetch, db.clone())?);
-    registry.add(SearchFetchedTool::new(db, tools.fetched.search)?);
+    registry.add(SearchFetchedTool::new(db, search)?);
     Ok(registry)
 }
 
@@ -279,7 +278,8 @@ async fn run_server(
         move || build_search_tools(tools.clone(), retrieval.clone()),
         agent.explorer.system_prompt,
     )?
-    .with_max_llm_calls(agent.max_llm_calls)?;
+    .with_max_llm_calls(agent.max_llm_calls)?
+    .with_max_tool_context_chars(agent.max_tool_context_chars)?;
     let mut research_tools = DeepResearchTools::default();
     research_tools.add(explorer);
 
@@ -290,29 +290,34 @@ async fn run_server(
             agent.planner.system_prompt,
             HashSet::new(),
         )?
-        .with_max_llm_calls(agent.max_llm_calls)?,
+        .with_max_llm_calls(agent.max_llm_calls)?
+        .with_max_tool_context_chars(agent.max_tool_context_chars)?,
         ReActAgent::new(
             research_runner,
             research_tools,
             agent.research.system_prompt,
             HashSet::new(),
         )?
-        .with_max_llm_calls(agent.max_llm_calls)?,
+        .with_max_llm_calls(agent.max_llm_calls)?
+        .with_max_tool_context_chars(agent.max_tool_context_chars)?,
         ReActAgent::new(
             gap_judger_runner,
             DeepResearchTools::default(),
             agent.gap_judger.system_prompt,
             HashSet::new(),
         )?
-        .with_max_llm_calls(agent.max_llm_calls)?,
+        .with_max_llm_calls(agent.max_llm_calls)?
+        .with_max_tool_context_chars(agent.max_tool_context_chars)?,
         ReActAgent::new(
             synthesizer_runner,
             DeepResearchTools::default(),
             agent.synthesizer.system_prompt,
             HashSet::new(),
         )?
-        .with_max_llm_calls(agent.max_llm_calls)?,
+        .with_max_llm_calls(agent.max_llm_calls)?
+        .with_max_tool_context_chars(agent.max_tool_context_chars)?,
     );
+    let orchestrator = orchestrator.with_limits(agent.limits)?;
     let host = if server.host.contains(':') && !server.host.starts_with('[') {
         format!("[{}]", server.host)
     } else {
@@ -320,7 +325,17 @@ async fn run_server(
     };
     let addr = format!("{host}:{}", server.port);
     tracing::info!(%addr, "Starting server");
-    DeepResearchServer::new(orchestrator).run(&addr).await
+    let mut server_app = DeepResearchServer::new(orchestrator);
+    if let Some(name) = &server.api_key_env {
+        let api_key = std::env::var(name)
+            .with_context(|| format!("Missing server API key environment variable: {name}"))?;
+        server_app = server_app
+            .with_api_key(api_key)
+            .with_context(|| format!("Server API key environment variable is empty: {name}"))?;
+    } else {
+        tracing::warn!("server.api_key_env is not set; the API accepts unauthenticated requests");
+    }
+    server_app.run(&addr).await
 }
 
 #[cfg(test)]

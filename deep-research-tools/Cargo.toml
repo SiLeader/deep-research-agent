@@ -20,7 +20,8 @@ genai = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 
 chrono = { workspace = true, features = ["serde"] }
-tokio = { workspace = true, features = ["net", "time"] }
+tokio = { workspace = true, features = ["net", "time", "rt"] }
+tracing = { workspace = true }
 encoding_rs = "0.8.35"
 mime = "0.3.17"
 

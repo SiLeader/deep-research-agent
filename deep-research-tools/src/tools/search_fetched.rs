@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 /// Retrieval limits shared by all tools in an Explorer invocation.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FetchedConfig {
     pub chunk_size: usize,
     pub default_top_k: usize,

@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WebRequestLimits {
     pub connect_timeout_secs: u64,
     pub request_timeout_secs: u64,

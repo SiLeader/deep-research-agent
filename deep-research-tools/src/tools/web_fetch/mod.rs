@@ -45,23 +45,21 @@ impl WebFetchTool {
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<mime::Mime>().ok());
-            let charset = content_type
-                .as_ref()
-                .and_then(|mime| mime.get_param("charset"))
-                .map(|charset| charset.as_str())
-                .unwrap_or("utf-8");
-            let encoding =
-                encoding_rs::Encoding::for_label(charset.as_bytes()).unwrap_or(encoding_rs::UTF_8);
             let body = bounded_body(res, self.limits.max_body_bytes).await?;
             let mut stored = false;
             if (200..300).contains(&status_code)
                 && let Some(kind) = &content_type
             {
-                let content = encoding.decode(&body).0.into_owned();
-                if kind.essence_str() == "text/html"
-                    || kind.essence_str() == "application/xhtml+xml"
-                {
-                    let markdown = htmd::convert(&content)?;
+                let is_html = matches!(kind.essence_str(), "text/html" | "application/xhtml+xml");
+                let charset = kind.get_param("charset").map(|charset| charset.as_str());
+                let content = detect_encoding(&body, charset, is_html)
+                    .decode(&body)
+                    .0
+                    .into_owned();
+                if is_html {
+                    // Converting a large page is CPU-bound; keep it off the async workers.
+                    let markdown =
+                        tokio::task::spawn_blocking(move || htmd::convert(&content)).await??;
                     self.db.add_text(url.as_str(), &markdown).await?;
                     stored = !markdown.trim().is_empty();
                 } else if matches!(kind.essence_str(), "text/plain" | "text/markdown") {
@@ -78,6 +76,68 @@ impl WebFetchTool {
         }
         unreachable!("redirect limit is checked before continuing")
     }
+}
+
+/// Choose the decoder by byte-order mark, then the Content-Type charset, then
+/// for HTML a `<meta>` charset declaration near the start of the document.
+fn detect_encoding(
+    body: &[u8],
+    header_charset: Option<&str>,
+    is_html: bool,
+) -> &'static encoding_rs::Encoding {
+    if let Some((encoding, _)) = encoding_rs::Encoding::for_bom(body) {
+        return encoding;
+    }
+    header_charset
+        .and_then(|charset| encoding_rs::Encoding::for_label(charset.trim().as_bytes()))
+        .or_else(|| is_html.then(|| meta_charset(body)).flatten())
+        .unwrap_or(encoding_rs::UTF_8)
+}
+
+fn meta_charset(body: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    let head = body[..body.len().min(4096)].to_ascii_lowercase();
+    let mut rest = head.as_slice();
+    while let Some(start) = find(rest, b"<meta") {
+        let tag = &rest[start..];
+        let tag = &tag[..find(tag, b">").unwrap_or(tag.len())];
+        if let Some(position) = find(tag, b"charset") {
+            let value = tag[position + b"charset".len()..]
+                .trim_ascii_start()
+                .strip_prefix(b"=")
+                .map(|value| value.trim_ascii_start());
+            if let Some(value) = value {
+                let value = value
+                    .strip_prefix(b"\"")
+                    .or(value.strip_prefix(b"'"))
+                    .unwrap_or(value);
+                let end = value
+                    .iter()
+                    .position(|byte| {
+                        matches!(byte, b'"' | b'\'' | b';' | b'/' | b'>')
+                            || byte.is_ascii_whitespace()
+                    })
+                    .unwrap_or(value.len());
+                if let Some(encoding) = encoding_rs::Encoding::for_label(&value[..end]) {
+                    // A meta declaration cannot describe UTF-16 content (HTML spec).
+                    return Some(
+                        if encoding == encoding_rs::UTF_16LE || encoding == encoding_rs::UTF_16BE {
+                            encoding_rs::UTF_8
+                        } else {
+                            encoding
+                        },
+                    );
+                }
+            }
+        }
+        rest = &rest[start + b"<meta".len()..];
+    }
+    None
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 #[derive(Debug, JsonSchema, Serialize, Deserialize)]
@@ -246,6 +306,44 @@ mod tests {
         assert!(tool.db.search("apple", 5).await.unwrap().is_empty());
         task.await.unwrap();
         embed_task.await.unwrap();
+    }
+
+    #[test]
+    fn detects_encoding_from_bom_header_and_meta_declarations() {
+        let sjis = encoding_rs::SHIFT_JIS.encode("日本語").0.into_owned();
+        for (html, expected) in [
+            ("<meta charset=\"Shift_JIS\">", encoding_rs::SHIFT_JIS),
+            (
+                "<META http-equiv='Content-Type' content='text/html; charset=euc-jp'>",
+                encoding_rs::EUC_JP,
+            ),
+            ("<meta charset=utf-16>", encoding_rs::UTF_8),
+            ("<p>no declaration</p>", encoding_rs::UTF_8),
+        ] {
+            assert_eq!(
+                detect_encoding(html.as_bytes(), None, true),
+                expected,
+                "{html}"
+            );
+        }
+        let page = [b"<meta charset=shift_jis><p>".as_slice(), &sjis].concat();
+        assert_eq!(
+            detect_encoding(&page, None, true).decode(&page).0,
+            "<meta charset=shift_jis><p>日本語"
+        );
+        assert_eq!(detect_encoding(&page, None, false), encoding_rs::UTF_8);
+        assert_eq!(
+            detect_encoding(&page, Some("euc-jp"), true),
+            encoding_rs::EUC_JP
+        );
+        assert_eq!(
+            detect_encoding(
+                b"\xEF\xBB\xBF<meta charset=shift_jis>",
+                Some("euc-jp"),
+                true
+            ),
+            encoding_rs::UTF_8
+        );
     }
 
     #[tokio::test]

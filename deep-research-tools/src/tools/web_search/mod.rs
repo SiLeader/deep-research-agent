@@ -46,6 +46,8 @@ pub struct WebSearchOutput {
         description = "Matching pages returned by the search service, with URLs, titles, scores, and publication dates. Page bodies are not included."
     )]
     pages: Vec<WebSearchPage>,
+    /// False when snippets could not be saved; fetch pages to read them with search_fetched.
+    snippets_saved: bool,
 }
 
 #[derive(Debug, JsonSchema, Serialize, Deserialize)]
@@ -79,19 +81,29 @@ impl DeepResearchTool for WebSearchTool {
         Some(
             "Purpose: Discover web sources using the configured SearXNG search service.\n\
              Input: Provide query as a focused search query.\n\
-             Output: Returns pages with URLs, titles, relevance scores, and publication dates; page bodies are not included. Available snippets are saved for search_fetched.\n\
+             Output: Returns pages with URLs, titles, relevance scores, and publication dates; page bodies are not included. Available snippets are saved for search_fetched when snippets_saved is true.\n\
              When to use: To find candidate sources for a research question. Use fetch on relevant URLs to inspect the source content and assess evidence.",
         )
     }
 
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output> {
         let res = self.searxng_client.search(&args.query).await?;
-        for page in &res.results {
-            if let Some(content) = &page.content {
-                self.db.add_text(&page.url, content).await?;
+        let snippets: Vec<_> = res
+            .results
+            .iter()
+            .filter_map(|page| Some((page.url.as_str(), page.content.as_deref()?)))
+            .collect();
+        // Search results remain useful even if snippet indexing fails.
+        let snippets_saved = match self.db.add_texts(&snippets).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!("Failed to save search snippets: {error:#}");
+                false
             }
-        }
-        Ok(res.into())
+        };
+        let mut output: WebSearchOutput = res.into();
+        output.snippets_saved = snippets_saved;
+        Ok(output)
     }
 }
 
@@ -222,5 +234,52 @@ mod tests {
         );
         let request = String::from_utf8(task.await.unwrap()).unwrap();
         assert!(request.starts_with("GET /search?format=json&q=test+query "));
+        assert_eq!(output["snippets_saved"], true);
+    }
+
+    #[tokio::test]
+    async fn snippet_storage_failure_still_returns_search_results() {
+        use crate::tools::http::tests::server;
+        use genai::{
+            Client, ModelIden, ServiceTarget,
+            adapter::AdapterKind,
+            resolver::{AuthData, Endpoint},
+        };
+        let zero = serde_json::json!({"object": "list", "model": "test", "data": [{"object": "embedding", "index": 0, "embedding": [0.0]}], "usage": {"prompt_tokens": 1, "total_tokens": 1}}).to_string();
+        let (embed_addr, embed_task) = server(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{zero}", zero.len())).await;
+        let client = Client::builder()
+            .with_service_target_resolver_fn(move |_: ServiceTarget| {
+                Ok(ServiceTarget {
+                    model: ModelIden::new(AdapterKind::OpenAI, "test"),
+                    auth: AuthData::from_single("test"),
+                    endpoint: Endpoint::from_owned(format!("http://{embed_addr}/")),
+                })
+            })
+            .build();
+        let body = serde_json::json!({"results": [
+            {"url": "https://example.com", "title": "Example", "score": 1.0, "content": "apple"}
+        ]})
+        .to_string();
+        let (addr, task) = server(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())).await;
+        let db = Arc::new(
+            FetchedDb::new(
+                1024,
+                Some(crate::fetched::Embedder::new("test", client)),
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+        let tool = WebSearchTool::new_for_searxng(&format!("http://{addr}/search"), db).unwrap();
+        let output = tool
+            .call(WebSearchArgs {
+                query: "apple".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(output.pages.len(), 1);
+        assert!(!output.snippets_saved);
+        task.await.unwrap();
+        embed_task.await.unwrap();
     }
 }

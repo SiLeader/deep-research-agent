@@ -89,20 +89,18 @@ impl DeepResearchOrchestrator {
         F: Fn(ResearchEvent) -> Fut + Send + Sync,
         Fut: Future<Output = ()> + Send,
     {
+        let prompt = create_prompt_for_synthesis(&plan, &outputs);
+        let validate = move |report: &FinalReport| report.validate(&plan, &outputs);
         let res: FinalReport = self
             .synthesizer_agent
-            .run_with_event(
-                create_prompt_for_synthesis(&plan, &outputs),
-                |event| async {
-                    event_callback(ResearchEvent::from_synthesizing_event(
-                        self.synthesizer_agent.model().to_string(),
-                        event,
-                    ))
-                    .await
-                },
-            )
+            .run_with_event_validated(prompt, validate, |event| async {
+                event_callback(ResearchEvent::from_synthesizing_event(
+                    self.synthesizer_agent.model().to_string(),
+                    event,
+                ))
+                .await
+            })
             .await?;
-        res.validate(&plan, &outputs)?;
         event_callback(ResearchEvent::from_synthesized_event(
             self.synthesizer_agent.model().to_string(),
             res,

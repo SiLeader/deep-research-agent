@@ -71,6 +71,7 @@ impl From<SearxngSearchResponse> for super::WebSearchOutput {
     fn from(response: SearxngSearchResponse) -> Self {
         Self {
             pages: response.results.into_iter().map(Into::into).collect(),
+            snippets_saved: false,
         }
     }
 }

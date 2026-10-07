@@ -17,13 +17,19 @@ pub(super) async fn plan_create(
 ) -> actix_web::Result<actix_web::HttpResponse> {
     let json = json.into_inner();
     let plan = if let Some(prev_plan) = json.previous_plan {
+        prev_plan
+            .validate()
+            .map_err(actix_web::error::ErrorBadRequest)?;
         orchestrator.replan(json.prompt, prev_plan).await
     } else {
         orchestrator.plan(json.prompt).await
     };
-    let plan = match plan {
-        Ok(p) => p,
-        Err(_) => return Ok(actix_web::HttpResponse::InternalServerError().finish()),
-    };
-    Ok(actix_web::HttpResponse::Ok().json(plan))
+    match plan {
+        Ok(plan) => Ok(actix_web::HttpResponse::Ok().json(plan)),
+        Err(error) => {
+            tracing::error!("Planning failed: {error:#}");
+            Ok(actix_web::HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "plan generation failed" })))
+        }
+    }
 }

@@ -2,7 +2,7 @@
 
 各エージェントは `submit` の引数として以下の JSON を返します。フィールドはすべて必須です。該当する要素がなければ配列を `[]` にし、未定義のフィールドは追加しません。
 
-ローカルLLMが生成する構造を単純に保つため、固定キーのオブジェクト、配列、文字列、真偽値、小さな列挙型だけを使います。任意フィールド、null を含む出力型、型の分岐、モデルが採番するIDは使いません。ツールの JSON Schema は入れ子の型をインライン化し、`$ref` を辿る必要をなくしています。質問と章の対応は、計画内の文字列をそのままコピーし、配列の順序を保つことで表します。
+ローカルLLMが生成する構造を単純に保つため、固定キーのオブジェクト、配列、文字列、整数、真偽値、小さな列挙型だけを使います。任意フィールド、null を含む出力型、型の分岐、モデルが採番するIDは使いません。ツールの JSON Schema は入れ子の型をインライン化し、`$ref` を辿る必要をなくしています。質問と調査結果の対応は配列の順序で表し、質問文はコピーさせません。章の対応は計画内の見出しをそのままコピーし、配列の順序を保つことで表します。
 
 ## Plan → Research / Synthesizer
 
@@ -32,7 +32,6 @@
 {
   "findings": [
     {
-      "question": "主要な技術にはどのような利点と制約があるか？",
       "answer": "確認できた利点と制約を根拠に基づいて記載する",
       "status": "partial",
       "references": [
@@ -44,7 +43,7 @@
 }
 ```
 
-`findings` は計画の質問と同じ件数・順序にします。各項目の `question` は対応する質問を完全一致でコピーします。根拠は回答ごとに格納するため、回答と資料の対応が失われません。`references` は実際に確認した資料だけを含めます。
+`findings` は計画の質問と同じ件数・順序にします。`findings[i]` が `questions[i]` への回答です。根拠は回答ごとに格納するため、回答と資料の対応が失われません。`references` は実際に確認した資料だけを含めます。
 
 | status | 意味 |
 | --- | --- |
@@ -59,7 +58,7 @@
   "approved": false,
   "gaps": [
     {
-      "question": "主要な技術にはどのような利点と制約があるか？",
+      "question_number": 1,
       "kind": "insufficient_evidence",
       "reason": "一部の技術を裏付ける一次資料が不足している",
       "next_action": "該当技術の一次資料を確認し、利点と制約の根拠を追加する"
@@ -68,9 +67,9 @@
 }
 ```
 
-`kind` は `missing_answer`、`insufficient_evidence`、`conflicting_evidence` のいずれかです。`question` は計画内の質問をコピーします。承認の場合は `{"approved": true, "gaps": []}` を返します。不承認では少なくとも一つの不足と具体的な調査指示が必要です。
+`kind` は `missing_answer`、`insufficient_evidence`、`conflicting_evidence` のいずれかです。`question_number` は対象の質問の `research_plan.questions` 内の位置(1始まり)です。承認の場合は `{"approved": true, "gaps": []}` を返します。不承認では少なくとも一つの不足と具体的な調査指示が必要です。
 
-再調査の入力には `research_plan`、`previous_research_output`、`previous_gap_analysis` を渡します。初回は後ろの二つが `null` です。再調査では前回の根拠ある回答を維持し、不足を解消して全質問の結果を再提出します。試行上限まで承認されなければ `Failed` になります。
+再調査の入力には `research_plan`、`previous_research_output`、`previous_gap_analysis` を渡します。初回は後ろの二つが `null` です。再調査では前回の根拠ある回答を維持し、不足を解消して全質問の結果を再提出します。試行上限(`agent.max_research_loops`)まで承認されなければ `Failed` になります。
 
 ## Research → Synthesizer
 
@@ -97,6 +96,10 @@
 
 ## 検証と移行
 
-計画の空欄・空配列・重複、質問の件数や対応、根拠のない `supported`、承認と不足リストの矛盾、具体的指示のない不足、計画と異なる章、未知の引用元を実行時に検証します。これらの検証は資料の真偽や引用の意味的な適切さを保証するものではなく、内容の充足性は gap judge が評価します。LLMの出力の解析・検証に失敗した場合は、計画APIでは HTTP 500、調査中は `Failed` を返します。外部から渡された無効な計画は調査APIで HTTP 400 になります。
+計画の空欄・空配列・重複、調査結果の件数、範囲外の `question_number`、根拠のない `supported`、承認と不足リストの矛盾、具体的指示のない不足、計画と異なる章、未知の引用元を実行時に検証します。これらの検証は資料の真偽や引用の意味的な適切さを保証するものではなく、内容の充足性は gap judge が評価します。
 
-この変更は従来の JSON と互換性がありません。保存済みの `goal` だけの計画は `scope`、`questions`、`report_plan.sections` を追加するか、計画APIで再生成してください。SSE利用側は `research_step_result` とステップ直下の `references` を `findings` と回答ごとの `references` に変更し、空だった `Synthesized.data` からレポート本文を読むよう更新してください。独自のシステムプロンプトを設定している場合も、新しい必須フィールドに合わせてください。
+LLMの出力の解析・検証に失敗した場合、エラー内容を `submit` のツール応答としてモデルに返し、`agent.max_llm_calls` の範囲で再提出させます。上限内に有効な出力が得られなければ、計画APIでは HTTP 500、調査中は `Failed` を返します。外部から渡された無効な計画は、調査APIと計画API(`previous_plan`)で HTTP 400 になります。
+
+SSE の `Researching`、`GapJudging`、`ResearchStepCompleted` には、`research_plans` 内の0始まりの位置を示す `step` が付きます。
+
+この変更は従来の JSON と互換性がありません。`findings[].question` は削除され、gap の `question` は `question_number` に置き換わりました。保存済みの `goal` だけの計画は `scope`、`questions`、`report_plan.sections` を追加するか、計画APIで再生成してください。SSE利用側は `research_step_result` とステップ直下の `references` を `findings` と回答ごとの `references` に変更し、空だった `Synthesized.data` からレポート本文を読むよう更新してください。独自のシステムプロンプトを設定している場合も、新しい必須フィールドに合わせてください。

@@ -40,9 +40,17 @@ impl CohereRerankerClient {
             );
             builder = builder.bearer_auth(key);
         }
-        let response = builder.send().await?.error_for_status()?;
-
-        let rerank_response: CohereRerankResponse = response.json().await?;
-        Ok(rerank_response)
+        let mut response = builder.send().await?.error_for_status()?;
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            anyhow::ensure!(
+                chunk.len() <= MAX_RESPONSE_BYTES - body.len(),
+                "reranker response exceeds {MAX_RESPONSE_BYTES} bytes"
+            );
+            body.extend_from_slice(&chunk);
+        }
+        Ok(serde_json::from_slice(&body)?)
     }
 }
+
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;

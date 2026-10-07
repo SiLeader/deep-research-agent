@@ -72,3 +72,89 @@ async fn stalled_request_times_out_and_releases_model_budget() {
         server.await.unwrap();
     }).await.unwrap();
 }
+
+fn fixture_client(addr: std::net::SocketAddr) -> Client {
+    Client::builder()
+        .with_service_target_resolver_fn(move |_: ServiceTarget| {
+            Ok(ServiceTarget {
+                model: ModelIden::new(AdapterKind::OpenAI, "gpt-test"),
+                auth: AuthData::from_single("test"),
+                endpoint: Endpoint::from_owned(format!("http://{addr}/")),
+            })
+        })
+        .build()
+}
+
+fn ok_response() -> String {
+    let body = serde_json::json!({
+        "id": "test", "object": "chat.completion", "created": 0, "model": "gpt-test",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "recovered"}, "finish_reason": "stop"}]
+    }).to_string();
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[tokio::test]
+async fn transient_failures_are_retried_and_others_are_not() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for (status, retried) in [(503, true), (429, true), (400, false)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_request(&mut socket).await;
+                let body = "{\"error\": {\"message\": \"busy\"}}";
+                socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                drop(socket);
+                if retried {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    read_request(&mut socket).await;
+                    socket.write_all(ok_response().as_bytes()).await.unwrap();
+                }
+            });
+            let arbiter = Arc::new(SemaphoreConcurrencyArbiter::new(HashMap::from([("model".into(), 1)])));
+            let runner = OneshotRunner::new("model".into(), fixture_client(addr), arbiter, ChatOptions::default())
+                .with_max_retries(1);
+            let result = runner.run(vec![ChatMessage::user("test")], vec![]).await;
+            assert_eq!(result.is_ok(), retried, "{status}");
+            server.await.unwrap();
+        }
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn call_budget_is_shared_and_enforced_before_requests() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        read_request(&mut socket).await;
+        socket.write_all(ok_response().as_bytes()).await.unwrap();
+    });
+    let arbiter = Arc::new(SemaphoreConcurrencyArbiter::new(HashMap::from([(
+        "model".into(),
+        1,
+    )])));
+    let runner = OneshotRunner::new(
+        "model".into(),
+        fixture_client(addr),
+        arbiter,
+        ChatOptions::default(),
+    );
+    let budget = CallBudget::new(1);
+    with_call_budget(budget.clone(), async {
+        runner
+            .run(vec![ChatMessage::user("a")], vec![])
+            .await
+            .unwrap();
+        let error = runner
+            .run(vec![ChatMessage::user("b")], vec![])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("budget exhausted"));
+    })
+    .await;
+    server.await.unwrap();
+}

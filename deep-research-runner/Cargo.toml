@@ -11,7 +11,9 @@ genai = { workspace = true }
 
 anyhow = { workspace = true }
 
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "rt"] }
+
+tracing = { workspace = true }
 
 [dev-dependencies]
 deep-research-arbiter = { workspace = true, features = ["semaphore"] }

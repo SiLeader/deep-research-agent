@@ -61,7 +61,12 @@ curl --fail-with-body http://127.0.0.1:8080/version
 | 設定                                | 内容                                                                                  |
 |-------------------------------------|---------------------------------------------------------------------------------------|
 | `server.host`, `server.port`        | 待ち受け先。既定値は `127.0.0.1:8080`。                                               |
+| `server.api_key_env`                | トークンを格納する環境変数名。指定すると `/api/` に `Authorization: Bearer <token>` が必要。省略可能。 |
 | `agent.max_llm_calls`               | Explorerを含む各エージェント実行のLLM呼び出し上限。既定値は `30`。正の値が必要。      |
+| `agent.max_research_loops`          | 調査項目ごとの調査・レビューのサイクル上限。既定値は `10`。                           |
+| `agent.max_total_llm_calls`         | 1件の調査リクエスト全体(Explorer・再試行を含む)のLLM呼び出し上限。既定値は `2000`。 |
+| `agent.research_timeout_secs`       | 統合を含む調査リクエスト全体の期限。既定値は `3600` 秒。                              |
+| `agent.max_tool_context_chars`      | 各エージェントの会話に保持するツール出力の文字数上限。古い出力から省略。既定値は `200000`。 |
 | `agent.model`                       | 全ロールの既定モデル ID。                                                             |
 | `agent.<role>.model`                | `planner`、`research`、`gap_judger`、`explorer`、`synthesizer` のモデル ID を上書き。 |
 | `agent.<role>.system_prompt`        | システムプロンプトを文字列で指定。省略時は `src/assets/` の組み込みファイルを使用。   |
@@ -70,6 +75,7 @@ curl --fail-with-body http://127.0.0.1:8080/version
 | `models[].name`                     | プロバイダーに送信するモデル名。                                                      |
 | `models[].max_concurrency`          | このモデル ID の最大同時リクエスト数。既定値は `1`。正の値が必要。                    |
 | `models[].request_timeout_secs`     | 同時実行枠の取得後、各チャットリクエストに適用する期限。既定値は `120` 秒。正の値が必要。埋め込みには検索設定の期限を使用。 |
+| `models[].max_retries`              | タイムアウト・接続エラー・HTTP 408/409/425/429/5xx の再試行回数。指数バックオフで `Retry-After` を尊重。既定値は `3`。 |
 | `providers[].id`                    | 一意のプロバイダー ID。                                                               |
 | `providers[].type`                  | `OpenAI` または `Anthropic`。大文字・小文字を区別。                                   |
 | `providers[].api_key_env`           | 認証に使う環境変数名。                                                                |
@@ -105,7 +111,8 @@ Rust APIでは `WebSearchTool` と `WebFetchTool` のコンストラクタに共
 再ランキングの `model` はサービスに渡すモデル名で、`[[models]]` のIDではありません。
 `endpoint` はCohere互換APIのベースURLです。末尾のスラッシュを正規化して `/rerank` を追加します。
 `api_key_env` を省略すると認証ヘッダーを送りません。指定時は環境変数からBearerトークンを読みます。
-両方の `request_timeout_secs` は既定60秒で正の値が必要です。再ランキングの `max_concurrency` は既定1で、全Explorer実行で共有します。
+両方の `request_timeout_secs` は既定60秒で正の値が必要です。埋め込みの `batch_size`(1リクエストあたりの入力数)は既定64です。
+スニペットの保存に失敗しても、`search_sources` は `snippets_saved: false` 付きで検索結果を返します。再ランキングの `max_concurrency` は既定1で、全Explorer実行で共有します。
 設定ミスは起動時にエラーになります。APIキーの欠落、APIエラー、タイムアウトはツールエラーになり、全文検索への自動切替は行いません。
 
 ```toml
@@ -170,7 +177,10 @@ curl --fail-with-body http://127.0.0.1:8080/api/v1/deep/research/plan \
 ```
 
 計画を修正する場合は、同じエンドポイントに `prompt` と、省略可能な `previous_plan` を送信します。`previous_plan`
-には計画オブジェクト全体を指定します。レスポンスには修正後の計画全体が返ります。計画作成に失敗した場合は HTTP `500` を返します。
+には計画オブジェクト全体を指定します。レスポンスには修正後の計画全体が返ります。無効な `previous_plan` は HTTP `400`、計画作成に失敗した場合は HTTP `500` を返し、ログに記録します。
+
+`server.api_key_env` を設定した場合は、`/api/` へのリクエストに `-H "Authorization: Bearer $API_KEY"` を追加します。認証がないリクエストは
+HTTP `401` になります。未設定の場合は起動時に警告をログに出します。その状態で公開しないでください。
 
 ### 調査の実行
 
@@ -185,14 +195,18 @@ curl --fail-with-body -N http://127.0.0.1:8080/api/v1/deep/research \
 
 SSE の各データフレームには、`model`、`phase`、`data` を持つ JSON が入ります。`model` は設定したモデル ID です。フェーズは
 `Researching`、`GapJudging`、`ResearchStepCompleted`、`Synthesizing`、`Synthesized`、`Failed`
-です。並行して実行する調査項目のイベントは混在する場合があります。
+です。並行して実行する調査項目のイベントは混在する場合があります。`Researching`、`GapJudging`、`ResearchStepCompleted`
+には `research_plans` 内の0始まりの位置を示す `step` が付きます。特定の項目が失敗した場合は `Failed` にも `step` が付きます。
 
-調査項目の完了イベントの例です。
+調査項目の完了イベントの例です(`findings[i]` がその項目の `questions[i]` への回答です)。
 
 ```text
-data: {"model":"default","phase":"ResearchStepCompleted","data":{"findings":[{"question":"主要な技術の利点と制約は？","answer":"調査結果...","status":"supported","references":[{"source":"https://example.com/source","content":"根拠となる情報..."}]}],"limitations":[]}}
+data: {"model":"default","step":0,"phase":"ResearchStepCompleted","data":{"findings":[{"answer":"調査結果...","status":"supported","references":[{"source":"https://example.com/source","content":"根拠となる情報..."}]}],"limitations":[]}}
 
 ```
+
+エージェントの提出内容が検証に失敗した場合(調査結果の件数違い、未知の引用元など)、エラーをツール応答としてモデルに返し、
+`agent.max_llm_calls` の範囲で再提出させます。
 
 イベントを待つ間は、15 秒ごとに `: keep-alive` コメントを送信します。正常終了時は `Synthesized` を出力します。調査や統合に失敗した場合は、
 `data.error` を持つ `Failed` を出力してストリームを閉じます。HTTP ステータスが `200`
@@ -205,11 +219,13 @@ data: {"model":"default","phase":"ResearchStepCompleted","data":{"findings":[{"q
 ## 現在の制約
 
 - HTMLはMarkdownへ変換して保存します。JavaScriptの実行やPDFなどのバイナリ形式の索引作成には対応していません。
+  文字コードはBOM、Content-Typeのcharset、HTMLの `<meta>` のcharsetの順で判定します。
 - fetchは公開HTTP (S)
   URLだけを許可し、DNS解決後のIPとリダイレクト先も検証します。内部・ループバック・リンクローカル・予約済みIPは拒否し、環境変数のプロキシは使いません。設定したLLMとSearXNGの接続先には内部URLを使用できます。
 - SearXNG結果の `url`、`title`、`score` は必須ですが、公開日時の `publishedDate` は省略・nullを許容します。ツール出力の
   `published_date` はUTC日時またはnullになります。
-- 各エージェント実行は `agent.max_llm_calls` で制限します。調査・レビューの10回制限は別に維持します。Web取得の時間・本文サイズ超過はツールエラーとしてエージェントに返します。
+- 各エージェント実行は `agent.max_llm_calls`、調査項目は `agent.max_research_loops`、調査リクエスト全体は
+  `agent.max_total_llm_calls` と `agent.research_timeout_secs` で制限します。Web取得の時間・本文サイズ超過はツールエラーとしてエージェントに返します。
   チャットリクエストは `models[].request_timeout_secs` でタイムアウトし、同時実行枠を解放します。この期限に枠の取得待ちは含みません。
 
 ## 開発

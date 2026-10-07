@@ -17,6 +17,7 @@ pub struct ExplorerTool {
     agent: ReActAgent,
     agent_factory: Option<AgentFactory>,
     max_llm_calls: usize,
+    max_tool_context_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
@@ -53,6 +54,12 @@ impl ExplorerTool {
     pub fn with_max_llm_calls(mut self, max_llm_calls: usize) -> anyhow::Result<Self> {
         self.agent = self.agent.with_max_llm_calls(max_llm_calls)?;
         self.max_llm_calls = max_llm_calls;
+        Ok(self)
+    }
+
+    pub fn with_max_tool_context_chars(mut self, max_chars: usize) -> anyhow::Result<Self> {
+        self.agent = self.agent.with_max_tool_context_chars(max_chars)?;
+        self.max_tool_context_chars = Some(max_chars);
         Ok(self)
     }
 
@@ -111,6 +118,7 @@ impl ExplorerTool {
             agent,
             agent_factory: None,
             max_llm_calls: 30,
+            max_tool_context_chars: None,
         })
     }
 }
@@ -135,12 +143,16 @@ impl DeepResearchTool for ExplorerTool {
 
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output> {
         let agent = match &self.agent_factory {
-            Some(factory) => factory().await?.with_max_llm_calls(self.max_llm_calls)?,
+            Some(factory) => {
+                let agent = factory().await?.with_max_llm_calls(self.max_llm_calls)?;
+                match self.max_tool_context_chars {
+                    Some(max_chars) => agent.with_max_tool_context_chars(max_chars)?,
+                    None => agent,
+                }
+            }
             None => self.agent.clone(),
         };
-        let res = agent.run(args.query).await?;
-        let output = serde_json::from_value(res.fn_arguments)?;
-        Ok(output)
+        agent.get_output(args.query).await
     }
 }
 

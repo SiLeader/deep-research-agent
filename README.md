@@ -63,8 +63,13 @@ See [config.example.toml](config.example.toml) for the full starting configurati
 | Setting                                                                                 | Meaning                                                                                              |
 |-----------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
 | `server.host`, `server.port`                                                            | Listen address; defaults to `127.0.0.1:8080`.                                                        |
+| `server.api_key_env`                                                                    | Optional environment variable holding a token; `/api/` routes then require `Authorization: Bearer <token>`. |
 | `agent.model`                                                                           | Default model ID for all roles.                                                                      |
 | `agent.max_llm_calls`                                                                   | Maximum LLM calls per agent invocation, including Explorer; defaults to `30` and must be positive.   |
+| `agent.max_research_loops`                                                              | Research/review cycles per research step before it fails; defaults to `10`.                         |
+| `agent.max_total_llm_calls`                                                             | LLM requests per research request across all agents, Explorer, and retries; defaults to `2000`.      |
+| `agent.research_timeout_secs`                                                           | Deadline for a whole research request, including synthesis; defaults to `3600`.                     |
+| `agent.max_tool_context_chars`                                                          | Tool output kept in each agent's conversation; older outputs are elided first. Defaults to `200000`. |
 | `agent.<role>.model`                                                                    | Model ID override for `planner`, `research`, `gap_judger`, `explorer`, or `synthesizer`.             |
 | `agent.<role>.system_prompt`                                                            | Inline system prompt override; omitted prompts use embedded files in `src/assets/`.                  |
 | `models[].id`                                                                           | Unique model ID referenced by agent roles.                                                           |
@@ -72,6 +77,7 @@ See [config.example.toml](config.example.toml) for the full starting configurati
 | `models[].name`                                                                         | Model name sent to the provider.                                                                     |
 | `models[].max_concurrency`                                                              | Maximum simultaneous requests for this model ID; defaults to `1` and must be positive.               |
 | `models[].request_timeout_secs`                                                         | Deadline per chat request after acquiring a model slot; defaults to `120` seconds and must be positive. Embeddings use their own retrieval timeout. |
+| `models[].max_retries`                                                                  | Retries for timeouts, connection errors, and HTTP 408/409/425/429/5xx with exponential backoff (honoring `Retry-After`); defaults to `3`. |
 | `providers[].id`                                                                        | Unique provider ID.                                                                                  |
 | `providers[].type`                                                                      | `OpenAI` or `Anthropic` (case-sensitive).                                                            |
 | `providers[].api_key_env`                                                               | Environment variable used for authentication.                                                        |
@@ -105,7 +111,8 @@ Prefer a separate model ID for embeddings. A model ID's `max_concurrency` is sha
 The reranker `model` is the service model name, not a `[[models]]` ID.
 Its `endpoint` is a Cohere-compatible API base URL; trailing slashes are normalized before appending `/rerank`.
 Omit `api_key_env` for unauthenticated services, or name the environment variable containing the Bearer token.
-Both `request_timeout_secs` values default to 60 and must be positive. The reranker `max_concurrency` defaults to 1 and is shared across explorations.
+Both `request_timeout_secs` values default to 60 and must be positive. The embedding `batch_size` (inputs per request) defaults to 64. The reranker `max_concurrency` defaults to 1 and is shared across explorations.
+If saving search snippets fails, `search_sources` still returns its pages with `snippets_saved: false`.
 Invalid retrieval settings fail at startup. Missing credentials, API errors, and timeouts become tool errors; there is no automatic fallback to lexical search.
 
 ```toml
@@ -170,7 +177,11 @@ The response has this structure (goals below are illustrative):
 ```
 
 To revise a plan, send `prompt` and an optional `previous_plan` containing the complete plan object to the same
-endpoint. The response is the complete revised plan. Planning failures return HTTP `500`.
+endpoint. The response is the complete revised plan. An invalid `previous_plan` returns HTTP `400`; planning failures
+return HTTP `500` and are logged.
+
+When `server.api_key_env` is set, add `-H "Authorization: Bearer $API_KEY"` to `/api/` requests. Unauthenticated
+requests receive HTTP `401`. Without it the server logs a warning at startup; do not expose such a server publicly.
 
 ### Run research
 
@@ -185,14 +196,18 @@ curl --fail-with-body -N http://127.0.0.1:8080/api/v1/deep/research \
 
 Each SSE data frame contains JSON with `model`, `phase`, and `data`. `model` is the configured model ID. Phases are
 `Researching`, `GapJudging`, `ResearchStepCompleted`, `Synthesizing`, `Synthesized`, and `Failed`. Events from
-concurrent research steps may interleave.
+concurrent research steps may interleave; `Researching`, `GapJudging`, and `ResearchStepCompleted` carry `step`, the
+0-based index in `research_plans`. `Failed` carries `step` when a specific step failed.
 
-Example completed research step:
+Example completed research step (`findings[i]` answers `questions[i]` of that step):
 
 ```text
-data: {"model":"default","phase":"ResearchStepCompleted","data":{"findings":[{"question":"What are the advantages and limitations of major technologies?","answer":"Findings...","status":"supported","references":[{"source":"https://example.com/source","content":"Supporting evidence..."}]}],"limitations":[]}}
+data: {"model":"default","step":0,"phase":"ResearchStepCompleted","data":{"findings":[{"answer":"Findings...","status":"supported","references":[{"source":"https://example.com/source","content":"Supporting evidence..."}]}],"limitations":[]}}
 
 ```
+
+If an agent submits output that fails validation (wrong number of findings, an unknown cited source, and so on), the
+error is returned to the model as the tool response and it may resubmit within `agent.max_llm_calls`.
 
 The server sends `: keep-alive` comments every 15 seconds while waiting for events. Successful completion emits
 `Synthesized`; a research or synthesis failure emits `Failed` with `data.error` and closes the stream. Clients must
@@ -205,13 +220,14 @@ research-result formats are incompatible.
 ## Current limitations
 
 - HTML is converted to Markdown before indexing; JavaScript is not executed. PDF and other binary formats are not indexed.
+  Text is decoded using the byte-order mark, the Content-Type charset, or an HTML `<meta>` charset, in that order.
 - Fetch permits only public HTTP (S) destinations, validates DNS answers and redirects, and bypasses environment
   proxies. Internal, loopback, link-local, and reserved IP ranges are rejected. Configured LLM and SearXNG endpoints may
   still be internal.
 - SearXNG results require `url`, `title`, and `score`; publication dates (`publishedDate`) may be missing or null.
   Returned pages expose `published_date` as a UTC timestamp or null.
-- Each agent invocation is bounded by `agent.max_llm_calls`. The separate limit of 10 research/review cycles remains.
-  Chat requests time out according to `models[].request_timeout_secs` and release their model concurrency slot; the deadline does not include waiting for that slot.
+- Each agent invocation is bounded by `agent.max_llm_calls`; research steps by `agent.max_research_loops`; each
+  research request by `agent.max_total_llm_calls` and `agent.research_timeout_secs`. Chat requests time out according to `models[].request_timeout_secs` and release their model concurrency slot; the deadline does not include waiting for that slot.
   Web timeouts and body limits are configurable; exceeding them returns a tool error for the agent to handle.
 
 ## Development

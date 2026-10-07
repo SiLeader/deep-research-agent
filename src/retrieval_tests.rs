@@ -52,6 +52,7 @@ fn services(endpoint: String, provider_type: config::ProviderType) -> ModelServi
             name: "fixture-embedding".into(),
             max_concurrency: 1,
             request_timeout_secs: 120,
+            max_retries: 0,
         }],
         vec![config::ProviderConfig {
             id: "fixture".into(),
@@ -237,7 +238,7 @@ fn retrieval_settings_default_and_reject_invalid_values() {
     assert!(defaults.reranker.is_none());
     defaults.validate().unwrap();
     let enabled: config::FetchedSettings = toml::from_str("chunk_size = 128\n[embedding]\nmodel = 'embedding'\n[reranker]\nmodel = 'rank'\nendpoint = 'http://localhost/v1/'").unwrap();
-    assert_eq!(enabled.search.chunk_size, 128);
+    assert_eq!(enabled.chunk_size, 128);
     assert_eq!(enabled.embedding.unwrap().request_timeout_secs, 60);
     let reranker = enabled.reranker.unwrap();
     assert_eq!(reranker.request_timeout_secs, 60);

@@ -2,6 +2,7 @@ use anyhow::Context;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Config {
     #[serde(default)]
     pub server: ServerConfig,
@@ -13,18 +14,23 @@ pub(crate) struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// Environment variable holding the bearer token required on `/api/` routes.
+    pub api_key_env: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct AgentConfig {
     pub model: Option<String>,
-    #[serde(default = "default_max_llm_calls")]
     pub max_llm_calls: usize,
+    pub max_research_loops: usize,
+    pub max_tool_context_chars: usize,
+    pub max_total_llm_calls: usize,
+    pub research_timeout_secs: u64,
     pub planner: AgentRoleConfig,
     pub research: AgentRoleConfig,
     pub gap_judger: AgentRoleConfig,
@@ -33,6 +39,7 @@ pub(crate) struct AgentConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct AgentRoleConfig {
     pub model: Option<String>,
     pub system_prompt: Option<String>,
@@ -40,6 +47,8 @@ pub(crate) struct AgentRoleConfig {
 
 pub(crate) struct MustAgentConfig {
     pub max_llm_calls: usize,
+    pub max_tool_context_chars: usize,
+    pub limits: deep_research_orchestrator::ResearchLimits,
     pub planner: MustAgentRoleConfig,
     pub research: MustAgentRoleConfig,
     pub gap_judger: MustAgentRoleConfig,
@@ -53,6 +62,7 @@ pub(crate) struct MustAgentRoleConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ModelConfig {
     pub id: String,
     pub provider: String,
@@ -61,6 +71,12 @@ pub(crate) struct ModelConfig {
     pub max_concurrency: usize,
     #[serde(default = "default_llm_request_timeout")]
     pub request_timeout_secs: u64,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+}
+
+fn default_max_retries() -> u32 {
+    3
 }
 
 fn default_llm_request_timeout() -> u64 {
@@ -72,6 +88,7 @@ fn default_max_concurrency() -> usize {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolsConfig {
     pub web_search: WebSearchConfig,
     #[serde(default)]
@@ -80,21 +97,49 @@ pub(crate) struct ToolsConfig {
     pub web_fetch: deep_research_tools::tools::WebRequestLimits,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+// Fields are listed explicitly rather than flattened so unknown keys are rejected.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct FetchedSettings {
-    #[serde(flatten)]
-    pub search: deep_research_tools::tools::search_fetched::FetchedConfig,
+    pub chunk_size: usize,
+    pub default_top_k: usize,
+    pub max_top_k: usize,
     pub embedding: Option<EmbeddingConfig>,
     pub reranker: Option<RerankerConfig>,
 }
 
+impl Default for FetchedSettings {
+    fn default() -> Self {
+        let search = deep_research_tools::tools::search_fetched::FetchedConfig::default();
+        Self {
+            chunk_size: search.chunk_size,
+            default_top_k: search.default_top_k,
+            max_top_k: search.max_top_k,
+            embedding: None,
+            reranker: None,
+        }
+    }
+}
+
 impl FetchedSettings {
+    pub fn search(&self) -> deep_research_tools::tools::search_fetched::FetchedConfig {
+        deep_research_tools::tools::search_fetched::FetchedConfig {
+            chunk_size: self.chunk_size,
+            default_top_k: self.default_top_k,
+            max_top_k: self.max_top_k,
+        }
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
-        self.search.validate()?;
+        self.search().validate()?;
         if let Some(embedding) = &self.embedding {
             anyhow::ensure!(
                 embedding.request_timeout_secs > 0,
                 "tools.fetched.embedding.request_timeout_secs must be positive"
+            );
+            anyhow::ensure!(
+                embedding.batch_size > 0,
+                "tools.fetched.embedding.batch_size must be positive"
             );
             anyhow::ensure!(
                 !embedding.model.trim().is_empty(),
@@ -131,14 +176,23 @@ impl FetchedSettings {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct EmbeddingConfig {
     /// ID in [[models]], using an OpenAI-compatible embeddings provider.
     pub model: String,
     #[serde(default = "default_retrieval_timeout")]
     pub request_timeout_secs: u64,
+    /// Maximum inputs per embedding request.
+    #[serde(default = "default_embedding_batch_size")]
+    pub batch_size: usize,
+}
+
+fn default_embedding_batch_size() -> usize {
+    deep_research_tools::fetched::DEFAULT_EMBEDDING_BATCH_SIZE
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RerankerConfig {
     /// Model name sent to the Cohere-compatible /rerank endpoint.
     pub model: String,
@@ -155,18 +209,47 @@ fn default_retrieval_timeout() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct WebSearchConfig {
     pub searxng: SearxngConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SearxngConfig {
     pub endpoint: String,
-    #[serde(flatten)]
-    pub limits: deep_research_tools::tools::WebRequestLimits,
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_secs: u64,
+    #[serde(default = "default_web_request_timeout")]
+    pub request_timeout_secs: u64,
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: usize,
+}
+
+impl SearxngConfig {
+    pub fn limits(&self) -> deep_research_tools::tools::WebRequestLimits {
+        deep_research_tools::tools::WebRequestLimits {
+            connect_timeout_secs: self.connect_timeout_secs,
+            request_timeout_secs: self.request_timeout_secs,
+            max_body_bytes: self.max_body_bytes,
+        }
+    }
+}
+
+fn default_connect_timeout() -> u64 {
+    deep_research_tools::tools::WebRequestLimits::default().connect_timeout_secs
+}
+
+fn default_web_request_timeout() -> u64 {
+    deep_research_tools::tools::WebRequestLimits::default().request_timeout_secs
+}
+
+fn default_max_body_bytes() -> usize {
+    deep_research_tools::tools::WebRequestLimits::default().max_body_bytes
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ProviderConfig {
     pub id: String,
     #[serde(rename = "type")]
@@ -181,15 +264,15 @@ pub(crate) enum ProviderType {
     Anthropic,
 }
 
-fn default_max_llm_calls() -> usize {
-    30
-}
-
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             model: None,
-            max_llm_calls: default_max_llm_calls(),
+            max_llm_calls: 30,
+            max_research_loops: 10,
+            max_tool_context_chars: 200_000,
+            max_total_llm_calls: 2_000,
+            research_timeout_secs: 3_600,
             planner: Default::default(),
             research: Default::default(),
             gap_judger: Default::default(),
@@ -204,6 +287,7 @@ impl Default for ServerConfig {
         Self {
             host: "127.0.0.1".to_string(),
             port: 8080,
+            api_key_env: None,
         }
     }
 }
@@ -214,6 +298,18 @@ impl AgentConfig {
             self.max_llm_calls > 0,
             "agent.max_llm_calls must be positive"
         );
+        anyhow::ensure!(
+            self.max_tool_context_chars > 0,
+            "agent.max_tool_context_chars must be positive"
+        );
+        let limits = deep_research_orchestrator::ResearchLimits {
+            max_research_loops: self.max_research_loops,
+            timeout: Some(std::time::Duration::from_secs(self.research_timeout_secs)),
+            max_total_llm_calls: Some(self.max_total_llm_calls),
+        };
+        limits.validate().context(
+            "agent.max_research_loops, agent.research_timeout_secs and agent.max_total_llm_calls must be positive",
+        )?;
         let planner_model = self
             .planner
             .model
@@ -241,6 +337,8 @@ impl AgentConfig {
             .context("`agent.synthesizer.model` or `agent.model` is not set in config")?;
         Ok(MustAgentConfig {
             max_llm_calls: self.max_llm_calls,
+            max_tool_context_chars: self.max_tool_context_chars,
+            limits,
             planner: MustAgentRoleConfig {
                 model: planner_model,
                 system_prompt: self
@@ -492,7 +590,12 @@ mod tests {
         assert_eq!(config.models[0].request_timeout_secs, 120);
         assert_eq!(config.tools.web_fetch.max_body_bytes, 2 * 1024 * 1024);
         assert_eq!(
-            config.tools.web_search.searxng.limits.request_timeout_secs,
+            config
+                .tools
+                .web_search
+                .searxng
+                .limits()
+                .request_timeout_secs,
             60
         );
         let mut agent = AgentConfig {
@@ -518,6 +621,50 @@ mod tests {
             let limits: deep_research_tools::tools::WebRequestLimits =
                 toml::from_str(text).unwrap();
             assert!(limits.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn unknown_keys_are_rejected_at_every_level() {
+        let base = include_str!("../config.example.toml");
+        toml::from_str::<Config>(base).unwrap();
+        for (section, typo) in [
+            ("[server]\n", "api_key = 'x'\n"),
+            ("[agent]\n", "max_llm_call = 3\n"),
+            ("[agent.planner]\n", "prompt = 'x'\n"),
+            ("[[models]]\n", "timeout = 3\n"),
+            ("[[providers]]\n", "key = 'x'\n"),
+            ("[tools.web_search.searxng]\n", "timeout = 3\n"),
+            ("[tools.web_fetch]\n", "timeout = 3\n"),
+            ("[tools.fetched]\n", "top_k = 3\n"),
+        ] {
+            let text = base.replacen(section, &format!("{section}{typo}"), 1);
+            assert_ne!(text, base, "{section}");
+            assert!(toml::from_str::<Config>(&text).is_err(), "{section}{typo}");
+        }
+    }
+
+    #[test]
+    fn research_limits_default_and_reject_zero() {
+        let config: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        assert_eq!(config.models[0].max_retries, 3);
+        assert!(config.server.api_key_env.is_none());
+        let agent = config.agent.into_must().unwrap();
+        assert_eq!(agent.max_tool_context_chars, 200_000);
+        assert_eq!(agent.limits.max_research_loops, 10);
+        assert_eq!(agent.limits.max_total_llm_calls, Some(2_000));
+        assert_eq!(
+            agent.limits.timeout,
+            Some(std::time::Duration::from_secs(3_600))
+        );
+        for text in [
+            "max_research_loops = 0",
+            "max_tool_context_chars = 0",
+            "max_total_llm_calls = 0",
+            "research_timeout_secs = 0",
+        ] {
+            let agent: AgentConfig = toml::from_str(&format!("model = 'm'\n{text}")).unwrap();
+            assert!(agent.into_must().is_err(), "{text}");
         }
     }
 

@@ -8,7 +8,7 @@ use genai::chat::{Tool, ToolConfig, ToolName};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[async_trait]
@@ -73,9 +73,11 @@ fn require_object_properties(schema: &mut serde_json::Value) {
     }
 }
 
+// Ordered by name so every registry presents tools identically, keeping
+// provider prompt caches effective across fresh per-invocation registries.
 #[derive(Clone, Default)]
 pub struct DeepResearchTools {
-    tools: HashMap<String, Arc<dyn WrappedTool>>,
+    tools: BTreeMap<String, Arc<dyn WrappedTool>>,
 }
 
 impl DeepResearchTools {

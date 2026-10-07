@@ -8,6 +8,9 @@ use std::pin::Pin;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchEvent {
     pub(crate) model: String,
+    /// Index of the research step in the plan, for step-scoped phases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) step: Option<usize>,
     #[serde(flatten)]
     pub(crate) phase: ResearchPhase,
 }
@@ -24,33 +27,38 @@ pub enum ResearchPhase {
 }
 
 impl ResearchEvent {
-    pub(crate) fn failed(model: String, error: String) -> Self {
+    pub(crate) fn failed(model: String, step: Option<usize>, error: String) -> Self {
         Self {
             model,
+            step,
             phase: ResearchPhase::Failed { error },
         }
     }
 
-    pub(crate) fn from_research_event(model: String, event: AgentEvent) -> Self {
+    pub(crate) fn from_research_event(model: String, step: usize, event: AgentEvent) -> Self {
         Self {
             model,
+            step: Some(step),
             phase: ResearchPhase::Researching(event),
         }
     }
 
-    pub(crate) fn from_gap_judging_event(model: String, event: AgentEvent) -> Self {
+    pub(crate) fn from_gap_judging_event(model: String, step: usize, event: AgentEvent) -> Self {
         Self {
             model,
+            step: Some(step),
             phase: ResearchPhase::GapJudging(event),
         }
     }
 
     pub(crate) fn from_research_step_completed_event(
         model: String,
+        step: usize,
         output: ResearchStepOutput,
     ) -> Self {
         Self {
             model,
+            step: Some(step),
             phase: ResearchPhase::ResearchStepCompleted(output),
         }
     }
@@ -58,6 +66,7 @@ impl ResearchEvent {
     pub(crate) fn from_synthesizing_event(model: String, event: AgentEvent) -> Self {
         Self {
             model,
+            step: None,
             phase: ResearchPhase::Synthesizing(event),
         }
     }
@@ -65,6 +74,7 @@ impl ResearchEvent {
     pub(crate) fn from_synthesized_event(model: String, report: FinalReport) -> Self {
         Self {
             model,
+            step: None,
             phase: ResearchPhase::Synthesized(report),
         }
     }
@@ -111,9 +121,13 @@ mod tests {
     async fn closed_channel_drains_events_and_ends() {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         let task = tokio::spawn(async move {
-            tx.send(ResearchEvent::failed("model".into(), "failure".into()))
-                .await
-                .unwrap();
+            tx.send(ResearchEvent::failed(
+                "model".into(),
+                None,
+                "failure".into(),
+            ))
+            .await
+            .unwrap();
         });
         let mut stream = ResearchEventStream::new(rx, task);
         assert!(stream.next().await.is_some());

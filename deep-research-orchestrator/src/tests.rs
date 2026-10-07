@@ -82,21 +82,23 @@ async fn structured_pipeline_passes_schemas_retry_feedback_and_final_report() {
         tokio::time::timeout(Duration::from_secs(10), async {
         let plan = crate::plan::tests::plan_value();
         let mut initial = serde_json::to_value(crate::research::tests::output()).unwrap();
-        initial["findings"][0]["question"] = json!("question");
         initial["findings"][0]["status"] = json!("partial");
         initial["limitations"] = json!(["Need a primary source"]);
         let mut revised = initial.clone();
         revised["findings"][0]["status"] = json!("supported");
         revised["limitations"] = json!([]);
-        let rejection = json!({"approved": false, "gaps": [{"question": "question",
+        let rejection = json!({"approved": false, "gaps": [{"question_number": 1,
             "kind": "insufficient_evidence", "reason": "Need a primary source", "next_action": "Find a primary source"}]});
-        let mut report = json!({"title": "Report", "summary": "Answer", "sections": [{
+        let report = json!({"title": "Report", "summary": "Answer", "sections": [{
             "heading": "Results", "content": "Supported answer", "sources": ["https://example.com"]}], "limitations": []});
+        let mut responses = vec![plan.clone(), initial.clone(), rejection.clone(), revised.clone(),
+            json!({"approved": true, "gaps": []})];
         if invalid_report {
-            report["sections"][0]["sources"] = json!(["https://invented.example"]);
+            let mut invented = report.clone();
+            invented["sections"][0]["sources"] = json!(["https://invented.example"]);
+            responses.push(invented);
         }
-        let responses = vec![plan.clone(), initial.clone(), rejection.clone(), revised.clone(),
-            json!({"approved": true, "gaps": []}), report.clone()];
+        responses.push(report.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}/api/v1/", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
@@ -132,16 +134,20 @@ async fn structured_pipeline_passes_schemas_retry_feedback_and_final_report() {
         assert_eq!(serde_json::to_value(&planned).unwrap(), plan);
         let events: Vec<_> = orchestrator.run_deep_research(planned).collect().await;
         let events: Vec<Value> = events.into_iter().map(|event| serde_json::to_value(event).unwrap()).collect();
-        if invalid_report {
-            assert_eq!(events.last().unwrap()["phase"], "Failed");
-            assert!(events.last().unwrap()["data"]["error"].as_str().unwrap().contains("unknown source"));
-        } else {
-            assert!(events.iter().all(|event| event["phase"] != "Failed"), "{events:?}");
-            assert_eq!(events.last().unwrap()["phase"], "Synthesized");
-            assert_eq!(events.last().unwrap()["data"], report);
-        }
-        assert_eq!(events.iter().find(|event| event["phase"] == "ResearchStepCompleted").unwrap()["data"], revised);
+        assert!(events.iter().all(|event| event["phase"] != "Failed"), "{events:?}");
+        assert_eq!(events.last().unwrap()["phase"], "Synthesized");
+        assert_eq!(events.last().unwrap()["data"], report);
+        assert!(events.last().unwrap().get("step").is_none());
+        let completed = events.iter().find(|event| event["phase"] == "ResearchStepCompleted").unwrap();
+        assert_eq!(completed["data"], revised);
+        assert_eq!(completed["step"], 0);
+        assert!(events.iter().filter(|event| event["phase"] == "Researching").all(|event| event["step"] == 0));
         let requests = server.await.unwrap();
+        if invalid_report {
+            let feedback = requests[6]["messages"].as_array().unwrap().iter()
+                .find(|message| message["role"] == "tool").expect("rejected report must be returned to the model");
+            assert!(feedback["content"].as_str().unwrap().contains("unknown source"));
+        }
         let retry = prompt_input(&requests[3]);
         assert_eq!(retry["previous_research_output"], initial);
         assert_eq!(retry["previous_gap_analysis"], rejection);
@@ -150,4 +156,122 @@ async fn structured_pipeline_passes_schemas_retry_feedback_and_final_report() {
         assert_eq!(synthesis["research_outputs"][0]["research_output"], revised);
     }).await.expect("pipeline must finish without extra LLM calls");
     }
+}
+
+fn fixture_orchestrator(
+    addr: std::net::SocketAddr,
+    limits: ResearchLimits,
+) -> DeepResearchOrchestrator {
+    let endpoint = format!("http://{addr}/api/v1/");
+    let client = Client::builder()
+        .with_service_target_resolver(ServiceTargetResolver::from_resolver_fn(
+            move |target: ServiceTarget| {
+                Ok(ServiceTarget {
+                    endpoint: Endpoint::from_owned(endpoint.clone()),
+                    auth: AuthData::from_single("test"),
+                    model: ModelIden::new(AdapterKind::OpenAI, target.model.model_name),
+                })
+            },
+        ))
+        .build();
+    let agent = ReActAgent::new(
+        OneshotRunner::new(
+            "gpt-test".into(),
+            client,
+            Arc::new(SemaphoreConcurrencyArbiter::new(HashMap::from([(
+                "gpt-test".into(),
+                1,
+            )]))),
+            ChatOptions::default(),
+        ),
+        DeepResearchTools::default(),
+        String::new(),
+        Default::default(),
+    )
+    .unwrap();
+    DeepResearchOrchestrator::new(agent.clone(), agent.clone(), agent.clone(), agent)
+        .with_limits(limits)
+        .unwrap()
+}
+
+fn plan() -> DeepResearchPlan {
+    serde_json::from_value(crate::plan::tests::plan_value()).unwrap()
+}
+
+#[tokio::test]
+async fn total_llm_call_budget_fails_the_research() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            let arguments = serde_json::to_value(crate::research::tests::output()).unwrap();
+            let body = json!({"id": "test", "object": "chat.completion", "created": 0, "model": "gpt-test",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": null,
+                "tool_calls": [{"id": "submit-call", "type": "function", "function": {
+                    "name": "submit", "arguments": arguments.to_string()}}]}, "finish_reason": "tool_calls"}]}).to_string();
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let limits = ResearchLimits { max_total_llm_calls: Some(1), ..Default::default() };
+        let events: Vec<_> = fixture_orchestrator(addr, limits).run_deep_research(plan()).collect().await;
+        let last = serde_json::to_value(events.last().unwrap()).unwrap();
+        assert_eq!(last["phase"], "Failed");
+        assert_eq!(last["step"], 0);
+        assert!(last["data"]["error"].as_str().unwrap().contains("budget exhausted"), "{last}");
+        server.await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn research_deadline_fails_the_research() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            futures::future::pending::<()>().await;
+        });
+        let limits = ResearchLimits {
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        };
+        let events: Vec<_> = fixture_orchestrator(addr, limits)
+            .run_deep_research(plan())
+            .collect()
+            .await;
+        let last = serde_json::to_value(events.last().unwrap()).unwrap();
+        assert_eq!(last["phase"], "Failed");
+        assert!(
+            last["data"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("time limit"),
+            "{last}"
+        );
+        server.abort();
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn research_limits_reject_zero_values() {
+    for limits in [
+        ResearchLimits {
+            max_research_loops: 0,
+            ..Default::default()
+        },
+        ResearchLimits {
+            timeout: Some(Duration::ZERO),
+            ..Default::default()
+        },
+        ResearchLimits {
+            max_total_llm_calls: Some(0),
+            ..Default::default()
+        },
+    ] {
+        assert!(limits.validate().is_err());
+    }
+    ResearchLimits::default().validate().unwrap();
 }

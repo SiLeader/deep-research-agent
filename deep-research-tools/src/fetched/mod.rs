@@ -27,6 +27,7 @@ struct State {
 pub struct Embedder {
     model: String,
     embed: genai::Client,
+    batch_size: usize,
     request_timeout: Option<std::time::Duration>,
     arbiter: Option<std::sync::Arc<dyn deep_research_arbiter::AgentConcurrencyArbiter>>,
 }
@@ -36,9 +37,17 @@ impl Embedder {
         Self {
             model: model.into(),
             embed: client,
+            batch_size: DEFAULT_EMBEDDING_BATCH_SIZE,
             request_timeout: None,
             arbiter: None,
         }
+    }
+
+    /// Maximum inputs per embedding request; larger inputs are split.
+    pub fn with_batch_size(mut self, batch_size: usize) -> anyhow::Result<Self> {
+        ensure!(batch_size > 0, "embedding batch_size must be positive");
+        self.batch_size = batch_size;
+        Ok(self)
     }
 
     /// Share the model concurrency budget with chat calls and other explorations.
@@ -60,6 +69,15 @@ impl Embedder {
     }
 
     async fn vectors(&self, texts: Vec<String>) -> anyhow::Result<Vec<Vec<f32>>> {
+        let mut vectors = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(self.batch_size) {
+            vectors.extend(self.batch_vectors(batch.to_vec()).await?);
+        }
+        Ok(vectors)
+    }
+
+    // Each batch acquires its own model permit so long pages do not starve chat calls.
+    async fn batch_vectors(&self, texts: Vec<String>) -> anyhow::Result<Vec<Vec<f32>>> {
         let _permit = match &self.arbiter {
             Some(arbiter) => Some(arbiter.acquire(&self.model).await?),
             None => None,
@@ -105,6 +123,8 @@ impl Reranker {
     }
 }
 
+pub const DEFAULT_EMBEDDING_BATCH_SIZE: usize = 64;
+
 #[derive(Debug, Clone)]
 pub struct FoundData {
     pub url: String,
@@ -141,17 +161,29 @@ impl FetchedDb {
     /// Append plain text or Markdown, including snippets returned by web search.
     /// Multiple chunks (including identical text at different URLs) remain distinct.
     pub async fn add_text(&self, url: &str, text: &str) -> anyhow::Result<()> {
-        let chunks: Vec<String> = self
-            .splitter
-            .chunks(text)
-            .filter(|chunk| !chunk.trim().is_empty())
-            .map(str::to_owned)
+        self.add_texts(&[(url, text)]).await
+    }
+
+    /// Append several documents atomically, embedding their chunks in batches.
+    pub async fn add_texts(&self, documents: &[(&str, &str)]) -> anyhow::Result<()> {
+        let chunks: Vec<(&str, String)> = documents
+            .iter()
+            .flat_map(|&(url, text)| {
+                self.splitter
+                    .chunks(text)
+                    .filter(|chunk| !chunk.trim().is_empty())
+                    .map(move |chunk| (url, chunk.to_owned()))
+            })
             .collect();
         if chunks.is_empty() {
             return Ok(());
         }
         let vectors = match &self.embedder {
-            Some(embedder) => Some(embedder.vectors(chunks.clone()).await?),
+            Some(embedder) => Some(
+                embedder
+                    .vectors(chunks.iter().map(|(_, chunk)| chunk.clone()).collect())
+                    .await?,
+            ),
             None => None,
         };
         let mut state = self.state.lock().await;
@@ -177,7 +209,7 @@ impl FetchedDb {
             db: emvedb.as_ref(),
             ids: Vec::new(),
         };
-        for (index, content) in chunks.iter().enumerate() {
+        for (index, (url, content)) in chunks.iter().enumerate() {
             let id = sqlx::query("INSERT INTO chunks(url, content, cjk) VALUES (?, ?, ?)")
                 .bind(url)
                 .bind(content)
@@ -234,17 +266,27 @@ impl FetchedDb {
             }
         }
         let mut vector_ids = Vec::new();
-        if let (Some(embedder), Some(db)) = (&self.embedder, &state.emvedb) {
+        if let Some(embedder) = &self.embedder
+            && state.emvedb.is_some()
+        {
+            // Do not hold the database lock during the embedding request.
+            drop(state);
             let vectors = embedder.vectors(vec![query.to_owned()]).await?;
+            state = self.state.lock().await;
+            let State { sqlite, emvedb } = &mut *state;
+            let db = emvedb.as_ref().expect("vector index is never removed");
             validate_vector(&vectors[0], Some(db.dimension() as usize))?;
             let results = db.search(&vectors[0], limit).await?;
             for result in results {
                 let id = result as i64;
-                let (url, content): (String, String) =
+                let Some((url, content)): Option<(String, String)> =
                     sqlx::query_as("SELECT url, content FROM chunks WHERE rowid = ?")
                         .bind(id)
-                        .fetch_one(&mut state.sqlite)
-                        .await?;
+                        .fetch_optional(&mut *sqlite)
+                        .await?
+                else {
+                    continue;
+                };
                 vector_ids.push(id);
                 candidates.entry(id).or_insert(FoundData {
                     url,
@@ -254,7 +296,7 @@ impl FetchedDb {
             }
             let scores = rrf(&lexical, &vector_ids);
             for (id, data) in &mut candidates {
-                data.score = scores[id];
+                data.score = scores.get(id).copied().unwrap_or_default();
             }
         }
         drop(state);
@@ -618,6 +660,34 @@ mod tests {
         assert!(found.iter().all(|data| data.url == "https://fruit.test"));
         let requests = task.await.unwrap();
         assert_eq!(requests[0]["input"], json!(["apple", "banana"]));
+    }
+
+    #[tokio::test]
+    async fn embedding_requests_are_split_into_batches() {
+        let (origin, task) = fixture(vec![
+            embedding(vec![1.0, 0.0]),
+            embedding(vec![0.0, 1.0]),
+            embedding(vec![1.0, 1.0]),
+        ])
+        .await;
+        let db = FetchedDb::new(6, Some(embedder(origin).with_batch_size(1).unwrap()), None)
+            .await
+            .unwrap();
+        db.add_texts(&[("https://a.test", "apple"), ("https://b.test", "banana")])
+            .await
+            .unwrap();
+        assert_eq!(
+            db.search("banana", 5).await.unwrap()[0].url,
+            "https://b.test"
+        );
+        let requests = task.await.unwrap();
+        assert_eq!(requests[0]["input"], json!(["apple"]));
+        assert_eq!(requests[1]["input"], json!(["banana"]));
+        assert!(
+            embedder("http://unused/".into())
+                .with_batch_size(0)
+                .is_err()
+        );
     }
 
     #[tokio::test]
