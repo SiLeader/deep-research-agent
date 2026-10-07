@@ -1,5 +1,5 @@
 [workspace]
-members = ["deep-research-agent-tools", "deep-research-api", "deep-research-arbiter", "deep-research-orchestrator", "deep-research-react-agent", "deep-research-runner", "deep-research-tools"]
+members = ["deep-research-agent-tools", "deep-research-api", "deep-research-arbiter", "deep-research-orchestrator", "deep-research-react-agent", "deep-research-reranker", "deep-research-runner", "deep-research-tools"]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +12,7 @@ deep-research-agent-tools = { path = "deep-research-agent-tools" }
 deep-research-arbiter = { path = "deep-research-arbiter" }
 deep-research-orchestrator = { path = "deep-research-orchestrator" }
 deep-research-react-agent = { path = "deep-research-react-agent" }
+deep-research-reranker = { path = "deep-research-reranker" }
 deep-research-runner = { path = "deep-research-runner" }
 deep-research-tools = { path = "deep-research-tools" }
 
@@ -39,6 +40,11 @@ reqwest = "0.13.5"
 
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+
+sqlx = "0.9.0"
+emvedb = "0.1.0"
+htmd = "0.5.5"
+text-splitter = "0.33.0"
 
 clap = "4.6.7"
 

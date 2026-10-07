@@ -1,0 +1,11 @@
+[package]
+name = "deep-research-reranker"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+
+anyhow = { workspace = true }
