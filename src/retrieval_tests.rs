@@ -51,6 +51,7 @@ fn services(endpoint: String, provider_type: config::ProviderType) -> ModelServi
             provider: "fixture".into(),
             name: "fixture-embedding".into(),
             max_concurrency: 1,
+            request_timeout_secs: 120,
         }],
         vec![config::ProviderConfig {
             id: "fixture".into(),
@@ -60,6 +61,44 @@ fn services(endpoint: String, provider_type: config::ProviderType) -> ModelServi
         }],
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn configured_chat_timeout_is_applied_to_runners() {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let mut services = services(endpoint, config::ProviderType::OpenAI);
+        services
+            .models
+            .get_mut("embedding")
+            .unwrap()
+            .request_timeout_secs = 1;
+        let runner = services.runners().unwrap().remove("embedding").unwrap();
+        let result = runner
+            .run(vec![genai::chat::ChatMessage::user("test")], vec![])
+            .await;
+        server.abort();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("LLM request timed out")
+        );
+        let _permit = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            services.arbiter.acquire("embedding"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 fn embedding() -> Value {

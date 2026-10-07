@@ -31,9 +31,11 @@ pub trait DeepResearchTool: Send + Sync + Clone {
         let generator = schemars::generate::SchemaSettings::default()
             .with(|settings| settings.inline_subschemas = true)
             .into_generator();
-        Ok(Some(serde_json::to_value(
-            generator.into_root_schema_for::<Self::Args>(),
-        )?))
+        let mut schema = serde_json::to_value(generator.into_root_schema_for::<Self::Args>())?;
+        if self.strict() == Some(true) {
+            require_object_properties(&mut schema);
+        }
+        Ok(Some(schema))
     }
 
     fn config(&self) -> Option<ToolConfig> {
@@ -41,6 +43,34 @@ pub trait DeepResearchTool: Send + Sync + Clone {
     }
 
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output>;
+}
+
+// Strict providers require every property to be present. Preserve nullable
+// Option schemas so callers can still request defaults by passing null.
+fn require_object_properties(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            if object.get("type").and_then(serde_json::Value::as_str) == Some("object") {
+                if let Some(properties) = object
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object)
+                {
+                    let required: Vec<_> = properties.keys().cloned().collect();
+                    object.insert("required".into(), serde_json::json!(required));
+                }
+                object.insert("additionalProperties".into(), serde_json::json!(false));
+            }
+            for value in object.values_mut() {
+                require_object_properties(value);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                require_object_properties(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Clone, Default)]
@@ -190,5 +220,32 @@ mod tests {
         assert_eq!(schema["properties"]["value"]["type"], "integer");
         assert_eq!(schema["required"], json!(["value"]));
         assert!(DeepResearchTools::default().tools().unwrap().is_empty());
+    }
+
+    #[test]
+    fn strict_schemas_require_nested_nullable_properties() {
+        #[derive(JsonSchema)]
+        struct Nested {
+            #[allow(dead_code)]
+            optional: Option<String>,
+        }
+        #[derive(JsonSchema)]
+        struct Args {
+            #[allow(dead_code)]
+            items: Vec<Nested>,
+        }
+        let generator = schemars::generate::SchemaSettings::default()
+            .with(|settings| settings.inline_subschemas = true)
+            .into_generator();
+        let mut schema = serde_json::to_value(generator.into_root_schema_for::<Args>()).unwrap();
+        require_object_properties(&mut schema);
+        assert_eq!(schema["required"], json!(["items"]));
+        let nested = &schema["properties"]["items"]["items"];
+        assert_eq!(nested["required"], json!(["optional"]));
+        assert_eq!(
+            nested["properties"]["optional"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(nested["additionalProperties"], false);
     }
 }

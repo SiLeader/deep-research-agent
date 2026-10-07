@@ -120,7 +120,9 @@ impl FetchedDb {
     ) -> anyhow::Result<Self> {
         ensure!(chunk_size > 0, "chunk_size must be positive");
         let mut sqlite = SqliteConnection::connect(":memory:").await?;
-        sqlite.execute("CREATE VIRTUAL TABLE chunks USING fts5(url UNINDEXED, content, tokenize='unicode61')").await?;
+        // Keep the original text for evidence and word search. A separate
+        // character index makes phrases inside unsegmented CJK text searchable.
+        sqlite.execute("CREATE VIRTUAL TABLE chunks USING fts5(url UNINDEXED, content, cjk, tokenize='unicode61')").await?;
         Ok(Self {
             state: Mutex::new(State {
                 sqlite,
@@ -164,7 +166,7 @@ impl FetchedDb {
                     "embedding dimension changed"
                 );
             } else {
-                state.emvedb = Some(VectorDb::create(dimension as u32)?);
+                state.emvedb = Some(VectorDb::create(dimension as u32).await?);
             }
         }
         let State { sqlite, emvedb } = &mut *state;
@@ -176,15 +178,16 @@ impl FetchedDb {
             ids: Vec::new(),
         };
         for (index, content) in chunks.iter().enumerate() {
-            let id = sqlx::query("INSERT INTO chunks(url, content) VALUES (?, ?)")
+            let id = sqlx::query("INSERT INTO chunks(url, content, cjk) VALUES (?, ?, ?)")
                 .bind(url)
                 .bind(content)
+                .bind(cjk_tokens(content))
                 .execute(&mut *tx)
                 .await?
                 .last_insert_rowid();
             if let (Some(db), Some(vectors)) = (pending.db, &vectors) {
                 pending.ids.push(id as u64);
-                db.put(id as u64, &vectors[index])?;
+                db.put(id as u64, &vectors[index]).await?;
             }
         }
         tx.commit().await?;
@@ -234,7 +237,7 @@ impl FetchedDb {
         if let (Some(embedder), Some(db)) = (&self.embedder, &state.emvedb) {
             let vectors = embedder.vectors(vec![query.to_owned()]).await?;
             validate_vector(&vectors[0], Some(db.dimension() as usize))?;
-            let results = db.search(&vectors[0], limit)?;
+            let results = db.search(&vectors[0], limit).await?;
             for result in results {
                 let id = result as i64;
                 let (url, content): (String, String) =
@@ -296,7 +299,7 @@ impl Drop for PendingVectors<'_> {
     fn drop(&mut self) {
         if let Some(db) = self.db {
             for &id in &self.ids {
-                let _ = db.delete(id);
+                db.delete_on_drop(id);
             }
         }
     }
@@ -326,9 +329,39 @@ fn literal_query(query: &str) -> String {
     query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
-        .map(|word| format!("\"{word}\""))
+        .map(|word| {
+            let original = format!("content : \"{word}\"");
+            if word.chars().any(is_cjk) {
+                format!("{original} OR cjk : \"{}\"", cjk_tokens(word))
+            } else {
+                original
+            }
+        })
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3040..=0x30ff | 0x3400..=0x4dbf | 0x4e00..=0x9fff |
+        0xf900..=0xfaff | 0xff66..=0xff9f | 0x20000..=0x323af)
+}
+
+fn cjk_tokens(text: &str) -> String {
+    if !text.chars().any(is_cjk) {
+        return String::new();
+    }
+    let mut tokens = String::new();
+    for c in text.chars() {
+        if is_cjk(c) {
+            tokens.push(' ');
+            tokens.push(c);
+            tokens.push(' ');
+        } else {
+            tokens.push(c);
+        }
+    }
+    tokens.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn rrf(lexical: &[i64], vectors: &[i64]) -> BTreeMap<i64, f32> {
@@ -502,6 +535,41 @@ mod tests {
         let found = db.search("\"apple\" OR banana*", 10).await.unwrap();
         assert!(found.iter().all(|data| data.url == "https://a.test"));
         assert!(found.iter().all(|data| !data.content.contains("<h1>")));
+    }
+
+    #[tokio::test]
+    async fn lexical_search_finds_phrases_in_unsegmented_cjk_text() {
+        let db = FetchedDb::new(1024, None, None).await.unwrap();
+        let evidence = "日本の再生可能エネルギー導入量は増加しています。AI研究も盛んです。";
+        db.add_text("https://japanese.test", evidence)
+            .await
+            .unwrap();
+        db.add_text(
+            "https://unrelated.test",
+            "再生も可能ですが、別の話題です。AIの研究。",
+        )
+        .await
+        .unwrap();
+        db.add_text("https://chinese.test", "中国的可再生能源持续增长。")
+            .await
+            .unwrap();
+        for query in [
+            "日本",
+            "再生可能エネルギー",
+            "エネルギー導入量",
+            "AI研究",
+            "日",
+        ] {
+            let results = db.search(query, 5).await.unwrap();
+            assert_eq!(results.len(), 1, "{query}");
+            assert_eq!(results[0].url, "https://japanese.test");
+            assert_eq!(results[0].content, evidence);
+        }
+        assert_eq!(
+            db.search("可再生能源", 5).await.unwrap()[0].url,
+            "https://chinese.test"
+        );
+        assert!(db.search("存在しない語", 5).await.unwrap().is_empty());
     }
 
     #[test]

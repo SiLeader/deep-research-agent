@@ -76,6 +76,7 @@ async fn main() {
 struct ModelRuntime {
     client: Client,
     provider_type: config::ProviderType,
+    request_timeout_secs: u64,
 }
 
 struct ModelServices {
@@ -84,19 +85,20 @@ struct ModelServices {
 }
 
 impl ModelServices {
-    fn runners(&self) -> HashMap<String, OneshotRunner> {
+    fn runners(&self) -> anyhow::Result<HashMap<String, OneshotRunner>> {
         self.models
             .iter()
             .map(|(id, runtime)| {
-                (
+                Ok((
                     id.clone(),
                     OneshotRunner::new(
                         id.clone(),
                         runtime.client.clone(),
                         self.arbiter.clone(),
                         ChatOptions::default().with_tool_choice(ToolChoice::Required),
-                    ),
-                )
+                    )
+                    .with_request_timeout(runtime.request_timeout_secs)?,
+                ))
             })
             .collect()
     }
@@ -116,6 +118,11 @@ fn build_model_services(
 
     let mut limits = HashMap::new();
     for model in &models {
+        anyhow::ensure!(
+            model.request_timeout_secs > 0,
+            "Invalid request_timeout_secs for model: {}",
+            model.id
+        );
         if model.max_concurrency == 0 || model.max_concurrency > tokio::sync::Semaphore::MAX_PERMITS
         {
             bail!("Invalid max_concurrency for model: {}", model.id);
@@ -159,6 +166,7 @@ fn build_model_services(
             ModelRuntime {
                 client,
                 provider_type: provider.provider_type.clone(),
+                request_timeout_secs: model.request_timeout_secs,
             },
         );
     }
@@ -250,7 +258,7 @@ async fn run_server(
 ) -> anyhow::Result<()> {
     let services = build_model_services(models, providers)?;
     let retrieval = RetrievalModels::new(&tools.fetched, &services)?;
-    let runners = services.runners();
+    let runners = services.runners()?;
     let runner = |id: &str| {
         runners
             .get(id)

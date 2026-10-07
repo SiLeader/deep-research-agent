@@ -59,6 +59,12 @@ pub(crate) struct ModelConfig {
     pub name: String,
     #[serde(default = "default_max_concurrency")]
     pub max_concurrency: usize,
+    #[serde(default = "default_llm_request_timeout")]
+    pub request_timeout_secs: u64,
+}
+
+fn default_llm_request_timeout() -> u64 {
+    120
 }
 
 fn default_max_concurrency() -> usize {
@@ -483,6 +489,7 @@ mod tests {
     fn execution_limits_default_override_and_reject_zero() {
         let config: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
         assert_eq!(config.agent.max_llm_calls, 30);
+        assert_eq!(config.models[0].request_timeout_secs, 120);
         assert_eq!(config.tools.web_fetch.max_body_bytes, 2 * 1024 * 1024);
         assert_eq!(
             config.tools.web_search.searxng.limits.request_timeout_secs,
@@ -512,5 +519,25 @@ mod tests {
                 toml::from_str(text).unwrap();
             assert!(limits.validate().is_err());
         }
+    }
+
+    #[test]
+    fn model_request_timeout_defaults_overrides_and_rejects_zero() {
+        let base = "id = 'test'\nprovider = 'fixture'\nname = 'test-model'\n";
+        let default: ModelConfig = toml::from_str(base).unwrap();
+        assert_eq!(default.request_timeout_secs, 120);
+        let custom: ModelConfig =
+            toml::from_str(&format!("{base}request_timeout_secs = 5")).unwrap();
+        assert_eq!(custom.request_timeout_secs, 5);
+        let invalid: ModelConfig =
+            toml::from_str(&format!("{base}request_timeout_secs = 0")).unwrap();
+        let error = super::super::build_model_services(vec![invalid], vec![])
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid request_timeout_secs for model: test")
+        );
     }
 }

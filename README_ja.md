@@ -69,6 +69,7 @@ curl --fail-with-body http://127.0.0.1:8080/version
 | `models[].provider`                 | 設定済みプロバイダーの ID。                                                           |
 | `models[].name`                     | プロバイダーに送信するモデル名。                                                      |
 | `models[].max_concurrency`          | このモデル ID の最大同時リクエスト数。既定値は `1`。正の値が必要。                    |
+| `models[].request_timeout_secs`     | 同時実行枠の取得後、各チャットリクエストに適用する期限。既定値は `120` 秒。正の値が必要。埋め込みには検索設定の期限を使用。 |
 | `providers[].id`                    | 一意のプロバイダー ID。                                                               |
 | `providers[].type`                  | `OpenAI` または `Anthropic`。大文字・小文字を区別。                                   |
 | `providers[].api_key_env`           | 認証に使う環境変数名。                                                                |
@@ -86,7 +87,7 @@ MiB）です。すべて正の値が必要です。fetchの60秒にはリダイ�
 取得データはExplorer呼び出しごとのインメモリ `FetchedDb` に保存され、終了時に解放されます。
 `search_sources` は利用可能なスニペットを保存し、`fetch` は成功したHTML（Markdownに変換）、プレーンテキスト、Markdownを保存します。
 `search_fetched` に `query` と `top_k`（nullで既定値）を渡すと、関連チャンクの `url`・`content`・`score` を取得できます。
-既定は全文検索です。埋め込みを指定すると全文・ベクトルのハイブリッド検索になり、再ランキングはどちらの検索方式にも追加できます。
+既定は全文検索です。補助の文字索引により、空白で区切られていない日本語・中国語の文中にあるキーワードや語句も検索できます。返される根拠は元の本文です。埋め込みを指定すると全文・ベクトルのハイブリッド検索になり、再ランキングはどちらの検索方式にも追加できます。
 `[tools.fetched]` の `chunk_size` は文字数で既定1024、`default_top_k` は5、`max_top_k` は20です。
 `0 < default_top_k <= max_top_k` と正のチャンクサイズが必要です。指定件数は最大値で制限します。
 取得と検索を同じ並行ツール呼び出しに入れると保存前に検索する場合があるため、取得結果を待ってから検索してください。
@@ -209,6 +210,7 @@ data: {"model":"default","phase":"ResearchStepCompleted","data":{"findings":[{"q
 - SearXNG結果の `url`、`title`、`score` は必須ですが、公開日時の `publishedDate` は省略・nullを許容します。ツール出力の
   `published_date` はUTC日時またはnullになります。
 - 各エージェント実行は `agent.max_llm_calls` で制限します。調査・レビューの10回制限は別に維持します。Web取得の時間・本文サイズ超過はツールエラーとしてエージェントに返します。
+  チャットリクエストは `models[].request_timeout_secs` でタイムアウトし、同時実行枠を解放します。この期限に枠の取得待ちは含みません。
 
 ## 開発
 

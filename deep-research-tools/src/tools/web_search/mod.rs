@@ -139,6 +139,13 @@ mod tests {
                 )
                 .unwrap(),
             );
+            tools.add(
+                crate::tools::search_fetched::SearchFetchedTool::new(
+                    Arc::new(FetchedDb::new(1024, None, None).await.unwrap()),
+                    Default::default(),
+                )
+                .unwrap(),
+            );
             let _ = client
                 .exec_chat(
                     "test-model",
@@ -150,7 +157,14 @@ mod tests {
             let request = task.await.unwrap();
             let start = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
             let body: serde_json::Value = serde_json::from_slice(&request[start..]).unwrap();
-            let tool = &body["tools"][0];
+            let tool = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| {
+                    tool["function"]["name"] == "search_sources" || tool["name"] == "search_sources"
+                })
+                .unwrap();
             let (name, schema) = if adapter == AdapterKind::OpenAI {
                 (&tool["function"]["name"], &tool["function"]["parameters"])
             } else {
@@ -159,6 +173,26 @@ mod tests {
             };
             assert_eq!(name, "search_sources");
             assert_eq!(schema["properties"]["query"]["type"], "string");
+            let fetched = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| {
+                    tool["function"]["name"] == "search_fetched" || tool["name"] == "search_fetched"
+                })
+                .unwrap();
+            let schema = if adapter == AdapterKind::OpenAI {
+                assert_eq!(fetched["function"]["strict"], true);
+                &fetched["function"]["parameters"]
+            } else {
+                &fetched["input_schema"]
+            };
+            assert_eq!(schema["required"], serde_json::json!(["query", "top_k"]));
+            assert_eq!(
+                schema["properties"]["top_k"]["type"],
+                serde_json::json!(["integer", "null"])
+            );
+            assert_eq!(schema["additionalProperties"], false);
         }
     }
 

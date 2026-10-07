@@ -11,3 +11,9 @@ genai = { workspace = true }
 
 anyhow = { workspace = true }
 
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+deep-research-arbiter = { workspace = true, features = ["semaphore"] }
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
+serde_json = { workspace = true }

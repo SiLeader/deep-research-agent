@@ -955,6 +955,8 @@ dependencies = [
  "anyhow",
  "deep-research-arbiter",
  "genai",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

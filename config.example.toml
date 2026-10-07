@@ -35,6 +35,9 @@ provider = "openai"
 name = "your-model-name"
 # Defaults to 1; shared by all agent roles using this model ID.
 max_concurrency = 1
+# Deadline for each chat request, after acquiring the model concurrency slot.
+# Defaults to 120 seconds; must be positive. Embedding uses its own timeout below.
+request_timeout_secs = 120
 
 [[providers]]
 id = "openai"

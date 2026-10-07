@@ -71,6 +71,7 @@ See [config.example.toml](config.example.toml) for the full starting configurati
 | `models[].provider`                                                                     | ID of a configured provider.                                                                         |
 | `models[].name`                                                                         | Model name sent to the provider.                                                                     |
 | `models[].max_concurrency`                                                              | Maximum simultaneous requests for this model ID; defaults to `1` and must be positive.               |
+| `models[].request_timeout_secs`                                                         | Deadline per chat request after acquiring a model slot; defaults to `120` seconds and must be positive. Embeddings use their own retrieval timeout. |
 | `providers[].id`                                                                        | Unique provider ID.                                                                                  |
 | `providers[].type`                                                                      | `OpenAI` or `Anthropic` (case-sensitive).                                                            |
 | `providers[].api_key_env`                                                               | Environment variable used for authentication.                                                        |
@@ -86,7 +87,7 @@ back to the resolved research model. The planner, research, and synthesizer role
 Each Explorer invocation owns a fresh in-memory `FetchedDb`, released when it ends.
 `search_sources` saves available snippets; `fetch` saves successful HTML (converted to Markdown), plain text, and Markdown.
 Call `search_fetched` with `query` and `top_k` (null for the default) to retrieve evidence chunks with `url`, `content`, and `score`.
-The server defaults to lexical search. Optional embedding enables hybrid lexical/vector retrieval; optional reranking reorders the candidates in either mode.
+The server defaults to lexical search. A supplementary character index supports keywords and phrases inside unsegmented Japanese and Chinese text, while returned evidence retains the original content. Optional embedding enables hybrid lexical/vector retrieval; optional reranking reorders the candidates in either mode.
 `[tools.fetched]` controls `chunk_size` (characters, default 1024), `default_top_k` (5), and `max_top_k` (20).
 Chunk size must be positive and `0 < default_top_k <= max_top_k`. Requested counts are capped at the maximum.
 Wait for fetch results before searching newly saved content: calls in the same tool batch may execute concurrently.
@@ -210,6 +211,7 @@ research-result formats are incompatible.
 - SearXNG results require `url`, `title`, and `score`; publication dates (`publishedDate`) may be missing or null.
   Returned pages expose `published_date` as a UTC timestamp or null.
 - Each agent invocation is bounded by `agent.max_llm_calls`. The separate limit of 10 research/review cycles remains.
+  Chat requests time out according to `models[].request_timeout_secs` and release their model concurrency slot; the deadline does not include waiting for that slot.
   Web timeouts and body limits are configurable; exceeding them returns a tool error for the agent to handle.
 
 ## Development
