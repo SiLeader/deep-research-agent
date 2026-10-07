@@ -9,3 +9,5 @@ reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 
 anyhow = { workspace = true }
+
+tokio = { workspace = true, features = ["sync"] }

@@ -83,6 +83,49 @@ See [config.example.toml](config.example.toml) for the full starting configurati
 Model selection uses the role override first, then `agent.model`. If neither is set, `gap_judger` and `explorer` fall
 back to the resolved research model. The planner, research, and synthesizer roles require a role model or `agent.model`.
 
+Each Explorer invocation owns a fresh in-memory `FetchedDb`, released when it ends.
+`search_sources` saves available snippets; `fetch` saves successful HTML (converted to Markdown), plain text, and Markdown.
+Call `search_fetched` with `query` and `top_k` (null for the default) to retrieve evidence chunks with `url`, `content`, and `score`.
+The server defaults to lexical search. Optional embedding enables hybrid lexical/vector retrieval; optional reranking reorders the candidates in either mode.
+`[tools.fetched]` controls `chunk_size` (characters, default 1024), `default_top_k` (5), and `max_top_k` (20).
+Chunk size must be positive and `0 < default_top_k <= max_top_k`. Requested counts are capped at the maximum.
+Wait for fetch results before searching newly saved content: calls in the same tool batch may execute concurrently.
+
+Migration: replace reads of `fetch.content` with `search_fetched`. Fetch now returns
+`status_code`, `url` (after redirects), `content_type`, and `stored`. HTTP errors, unsupported or missing Content-Type,
+and empty content are not indexed. Storage failures become tool errors. Update custom Explorer prompts accordingly.
+Rust callers must pass a shared `Arc<FetchedDb>` to `WebSearchTool` and `WebFetchTool` constructors.
+Replace `WebFetchTool::default()` with `new(limits, db)`. Use `ExplorerTool::new_with_tools_factory`
+for per-invocation tools; existing Explorer constructors share the supplied registry.
+
+To enable embeddings, register an OpenAI-compatible embedding model in `[[models]]` and reference its ID
+in `[tools.fetched.embedding].model`. The existing `[[providers]]` entry supplies the endpoint and API key.
+Prefer a separate model ID for embeddings. A model ID's `max_concurrency` is shared by chat, embeddings, and all Explorer invocations.
+The reranker `model` is the service model name, not a `[[models]]` ID.
+Its `endpoint` is a Cohere-compatible API base URL; trailing slashes are normalized before appending `/rerank`.
+Omit `api_key_env` for unauthenticated services, or name the environment variable containing the Bearer token.
+Both `request_timeout_secs` values default to 60 and must be positive. The reranker `max_concurrency` defaults to 1 and is shared across explorations.
+Invalid retrieval settings fail at startup. Missing credentials, API errors, and timeouts become tool errors; there is no automatic fallback to lexical search.
+
+```toml
+[[models]]
+id = "embedding"
+provider = "openai"
+name = "your-embedding-model"
+max_concurrency = 1
+
+[tools.fetched.embedding]
+model = "embedding"
+request_timeout_secs = 60
+
+[tools.fetched.reranker]
+endpoint = "http://127.0.0.1:8001/v1/"
+model = "your-reranker-model"
+# api_key_env = "RERANKER_API_KEY"
+request_timeout_secs = 60
+max_concurrency = 1
+```
+
 ## HTTP API
 
 | Method | Path                         | Response                                    |
@@ -160,7 +203,7 @@ research-result formats are incompatible.
 
 ## Current limitations
 
-- Page fetching returns raw response text, including HTML. It does not extract article text or execute JavaScript.
+- HTML is converted to Markdown before indexing; JavaScript is not executed. PDF and other binary formats are not indexed.
 - Fetch permits only public HTTP (S) destinations, validates DNS answers and redirects, and bypasses environment
   proxies. Internal, loopback, link-local, and reserved IP ranges are rejected. Configured LLM and SearXNG endpoints may
   still be internal.

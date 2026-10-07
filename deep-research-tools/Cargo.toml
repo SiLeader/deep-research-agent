@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 deep-research-reranker = { workspace = true }
+deep-research-arbiter = { workspace = true }
 
 async-trait = { workspace = true }
 anyhow = { workspace = true }

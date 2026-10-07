@@ -7,10 +7,16 @@ use genai::chat::ToolName;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::{future::Future, pin::Pin, sync::Arc};
+
+type AgentFactory =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<ReActAgent>> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ExplorerTool {
     agent: ReActAgent,
+    agent_factory: Option<AgentFactory>,
+    max_llm_calls: usize,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
@@ -46,7 +52,34 @@ struct ExplorerReference {
 impl ExplorerTool {
     pub fn with_max_llm_calls(mut self, max_llm_calls: usize) -> anyhow::Result<Self> {
         self.agent = self.agent.with_max_llm_calls(max_llm_calls)?;
+        self.max_llm_calls = max_llm_calls;
         Ok(self)
+    }
+
+    /// Create fresh tools for each invocation, including concurrent calls and clones.
+    pub fn new_with_tools_factory<F, Fut>(
+        runner: OneshotRunner,
+        factory: F,
+        system_prompt: String,
+    ) -> anyhow::Result<Self>
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<DeepResearchTools>> + Send + 'static,
+    {
+        let mut tool = Self::new_with_system_prompt(
+            runner.clone(),
+            DeepResearchTools::default(),
+            system_prompt.clone(),
+        )?;
+        tool.agent_factory = Some(Arc::new(move || {
+            let tools = factory();
+            let runner = runner.clone();
+            let prompt = system_prompt.clone();
+            Box::pin(async move {
+                Ok(Self::new_with_system_prompt(runner, tools.await?, prompt)?.agent)
+            })
+        }));
+        Ok(tool)
     }
 
     pub fn new(runner: OneshotRunner, search_tools: DeepResearchTools) -> anyhow::Result<Self> {
@@ -74,7 +107,11 @@ impl ExplorerTool {
             Some(true),
             None,
         ));
-        Ok(Self { agent })
+        Ok(Self {
+            agent,
+            agent_factory: None,
+            max_llm_calls: 30,
+        })
     }
 }
 
@@ -97,8 +134,86 @@ impl DeepResearchTool for ExplorerTool {
     }
 
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output> {
-        let res = self.agent.run(args.query).await?;
+        let agent = match &self.agent_factory {
+            Some(factory) => factory().await?.with_max_llm_calls(self.max_llm_calls)?,
+            None => self.agent.clone(),
+        };
+        let res = agent.run(args.query).await?;
         let output = serde_json::from_value(res.fn_arguments)?;
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deep_research_arbiter::{AgentConcurrencyArbiter, ArbiterTabletGuard};
+    use deep_research_tools::{
+        fetched::FetchedDb,
+        tools::search_fetched::{FetchedConfig, SearchFetchedTool},
+    };
+    use genai::{Client, chat::ChatOptions};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Mutex;
+
+    struct FailingArbiter;
+    #[async_trait]
+    impl AgentConcurrencyArbiter for FailingArbiter {
+        async fn acquire(&self, _: &str) -> anyhow::Result<ArbiterTabletGuard> {
+            anyhow::bail!("fixture stops before calling the LLM")
+        }
+    }
+
+    #[tokio::test]
+    async fn cloned_and_concurrent_invocations_create_isolated_databases() {
+        let databases = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let tool = ExplorerTool::new_with_tools_factory(
+            OneshotRunner::new(
+                "test".into(),
+                Client::default(),
+                Arc::new(FailingArbiter),
+                ChatOptions::default(),
+            ),
+            {
+                let databases = databases.clone();
+                let calls = calls.clone();
+                move || {
+                    let databases = databases.clone();
+                    let id = calls.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        let db = Arc::new(FetchedDb::new(1024, None, None).await?);
+                        db.add_text(&format!("https://source{id}.test"), "apple evidence")
+                            .await?;
+                        databases.lock().await.push(db.clone());
+                        let mut tools = DeepResearchTools::default();
+                        tools.add(SearchFetchedTool::new(db, FetchedConfig::default())?);
+                        Ok(tools)
+                    }
+                }
+            },
+            "test".into(),
+        )
+        .unwrap()
+        .with_max_llm_calls(1)
+        .unwrap();
+        let clone = tool.clone();
+        let (a, b) = tokio::join!(
+            tool.call(ExplorerArgs { query: "a".into() }),
+            clone.call(ExplorerArgs { query: "b".into() })
+        );
+        assert!(a.is_err());
+        assert!(b.is_err());
+        assert!(tool.call(ExplorerArgs { query: "c".into() }).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let databases = databases.lock().await;
+        let mut urls = HashSet::new();
+        for db in databases.iter() {
+            let results = db.search("apple", 20).await.unwrap();
+            assert_eq!(results.len(), 1);
+            urls.insert(results[0].url.clone());
+        }
+        assert_eq!(urls.len(), 3);
+        assert_eq!(tool.max_llm_calls, 1);
     }
 }

@@ -83,6 +83,49 @@ Web取得の上限は `[tools.web_fetch]`、検索の上限は `[tools.web_searc
 は既定で10秒、`request_timeout_secs` は60秒、`max_body_bytes` は2097152バイト（2
 MiB）です。すべて正の値が必要です。fetchの60秒にはリダイレクト先の取得も含みます。
 
+取得データはExplorer呼び出しごとのインメモリ `FetchedDb` に保存され、終了時に解放されます。
+`search_sources` は利用可能なスニペットを保存し、`fetch` は成功したHTML（Markdownに変換）、プレーンテキスト、Markdownを保存します。
+`search_fetched` に `query` と `top_k`（nullで既定値）を渡すと、関連チャンクの `url`・`content`・`score` を取得できます。
+既定は全文検索です。埋め込みを指定すると全文・ベクトルのハイブリッド検索になり、再ランキングはどちらの検索方式にも追加できます。
+`[tools.fetched]` の `chunk_size` は文字数で既定1024、`default_top_k` は5、`max_top_k` は20です。
+`0 < default_top_k <= max_top_k` と正のチャンクサイズが必要です。指定件数は最大値で制限します。
+取得と検索を同じ並行ツール呼び出しに入れると保存前に検索する場合があるため、取得結果を待ってから検索してください。
+
+移行時は、`fetch` の `content` を読む処理を `search_fetched` に置き換えてください。新しい取得結果は
+`status_code`・`url`（リダイレクト後）・`content_type`・`stored` を返します。HTTPエラー、未対応・未指定のContent-Type、
+空本文は保存されません。保存失敗はツールエラーになります。カスタムExplorerプロンプトもこの手順に更新してください。
+Rust APIでは `WebSearchTool` と `WebFetchTool` のコンストラクタに共有する `Arc<FetchedDb>` を渡します。
+`WebFetchTool::default()` は廃止し、`new(limits, db)` を使います。実行ごとの生成には
+`ExplorerTool::new_with_tools_factory` を使用します。従来のExplorerコンストラクタは渡したツールを共有します。
+
+埋め込みを有効にする場合は、OpenAI互換の埋め込みモデルを `[[models]]` に追加し、
+`[tools.fetched.embedding]` の `model` にそのIDを指定します。接続先とAPIキーは既存の `[[providers]]` を使います。
+チャット用モデルとは別のIDを推奨します。同じIDの `max_concurrency` はチャットと埋め込み、全Explorer実行で共有します。
+再ランキングの `model` はサービスに渡すモデル名で、`[[models]]` のIDではありません。
+`endpoint` はCohere互換APIのベースURLです。末尾のスラッシュを正規化して `/rerank` を追加します。
+`api_key_env` を省略すると認証ヘッダーを送りません。指定時は環境変数からBearerトークンを読みます。
+両方の `request_timeout_secs` は既定60秒で正の値が必要です。再ランキングの `max_concurrency` は既定1で、全Explorer実行で共有します。
+設定ミスは起動時にエラーになります。APIキーの欠落、APIエラー、タイムアウトはツールエラーになり、全文検索への自動切替は行いません。
+
+```toml
+[[models]]
+id = "embedding"
+provider = "openai"
+name = "your-embedding-model"
+max_concurrency = 1
+
+[tools.fetched.embedding]
+model = "embedding"
+request_timeout_secs = 60
+
+[tools.fetched.reranker]
+endpoint = "http://127.0.0.1:8001/v1/"
+model = "your-reranker-model"
+# api_key_env = "RERANKER_API_KEY"
+request_timeout_secs = 60
+max_concurrency = 1
+```
+
 ## HTTP API
 
 | メソッド | パス                         | レスポンス                                    |
@@ -160,7 +203,7 @@ data: {"model":"default","phase":"ResearchStepCompleted","data":{"findings":[{"q
 
 ## 現在の制約
 
-- ページ取得は HTML などを含むレスポンスのテキストをそのまま返します。記事本文の抽出や JavaScript の実行は行いません。
+- HTMLはMarkdownへ変換して保存します。JavaScriptの実行やPDFなどのバイナリ形式の索引作成には対応していません。
 - fetchは公開HTTP (S)
   URLだけを許可し、DNS解決後のIPとリダイレクト先も検証します。内部・ループバック・リンクローカル・予約済みIPは拒否し、環境変数のプロキシは使いません。設定したLLMとSearXNGの接続先には内部URLを使用できます。
 - SearXNG結果の `url`、`title`、`score` は必須ですが、公開日時の `publishedDate` は省略・nullを許容します。ツール出力の

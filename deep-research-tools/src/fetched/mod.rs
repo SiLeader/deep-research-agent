@@ -4,11 +4,12 @@
 //! for hybrid search, and provider relevance scores when reranking is enabled.
 use anyhow::ensure;
 use deep_research_reranker::DeepResearchReranker;
-use emvedb::{CreateOptions, EmveDb, SearchOptions};
+mod vector;
 use sqlx::{Connection, Executor, SqliteConnection};
 use std::collections::BTreeMap;
 use text_splitter::{Characters, TextSplitter};
 use tokio::sync::Mutex;
+use vector::VectorDb;
 
 pub struct FetchedDb {
     state: Mutex<State>,
@@ -19,12 +20,15 @@ pub struct FetchedDb {
 
 struct State {
     sqlite: SqliteConnection,
-    emvedb: Option<EmveDb>,
+    emvedb: Option<VectorDb>,
 }
 
+#[derive(Clone)]
 pub struct Embedder {
     model: String,
     embed: genai::Client,
+    request_timeout: Option<std::time::Duration>,
+    arbiter: Option<std::sync::Arc<dyn deep_research_arbiter::AgentConcurrencyArbiter>>,
 }
 
 impl Embedder {
@@ -32,12 +36,42 @@ impl Embedder {
         Self {
             model: model.into(),
             embed: client,
+            request_timeout: None,
+            arbiter: None,
         }
     }
 
+    /// Share the model concurrency budget with chat calls and other explorations.
+    pub fn with_arbiter(
+        mut self,
+        arbiter: std::sync::Arc<dyn deep_research_arbiter::AgentConcurrencyArbiter>,
+    ) -> Self {
+        self.arbiter = Some(arbiter);
+        self
+    }
+
+    pub fn with_request_timeout(mut self, timeout_secs: u64) -> anyhow::Result<Self> {
+        ensure!(
+            timeout_secs > 0,
+            "embedding request_timeout_secs must be positive"
+        );
+        self.request_timeout = Some(std::time::Duration::from_secs(timeout_secs));
+        Ok(self)
+    }
+
     async fn vectors(&self, texts: Vec<String>) -> anyhow::Result<Vec<Vec<f32>>> {
+        let _permit = match &self.arbiter {
+            Some(arbiter) => Some(arbiter.acquire(&self.model).await?),
+            None => None,
+        };
         let count = texts.len();
-        let response = self.embed.embed_batch(&self.model, texts, None).await?;
+        let request = self.embed.embed_batch(&self.model, texts, None);
+        let response = match self.request_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, request)
+                .await
+                .map_err(|_| anyhow::anyhow!("embedding request timed out"))??,
+            None => request.await?,
+        };
         ensure!(
             response.embeddings.len() == count,
             "embedding count mismatch"
@@ -56,6 +90,7 @@ impl Embedder {
     }
 }
 
+#[derive(Clone)]
 pub struct Reranker {
     model: String,
     reranker: DeepResearchReranker,
@@ -129,13 +164,7 @@ impl FetchedDb {
                     "embedding dimension changed"
                 );
             } else {
-                state.emvedb = Some(EmveDb::create(
-                    ":memory:",
-                    &CreateOptions {
-                        dimension: dimension as u32,
-                        ..Default::default()
-                    },
-                )?);
+                state.emvedb = Some(VectorDb::create(dimension as u32)?);
             }
         }
         let State { sqlite, emvedb } = &mut *state;
@@ -155,7 +184,7 @@ impl FetchedDb {
                 .last_insert_rowid();
             if let (Some(db), Some(vectors)) = (pending.db, &vectors) {
                 pending.ids.push(id as u64);
-                db.put(id as u64, &vectors[index], &[])?;
+                db.put(id as u64, &vectors[index])?;
             }
         }
         tx.commit().await?;
@@ -205,9 +234,9 @@ impl FetchedDb {
         if let (Some(embedder), Some(db)) = (&self.embedder, &state.emvedb) {
             let vectors = embedder.vectors(vec![query.to_owned()]).await?;
             validate_vector(&vectors[0], Some(db.dimension() as usize))?;
-            let results = db.search(&vectors[0], limit, &SearchOptions::default())?;
+            let results = db.search(&vectors[0], limit)?;
             for result in results {
-                let id = result.id as i64;
+                let id = result as i64;
                 let (url, content): (String, String) =
                     sqlx::query_as("SELECT url, content FROM chunks WHERE rowid = ?")
                         .bind(id)
@@ -259,7 +288,7 @@ impl FetchedDb {
 }
 
 struct PendingVectors<'a> {
-    db: Option<&'a EmveDb>,
+    db: Option<&'a VectorDb>,
     ids: Vec<u64>,
 }
 

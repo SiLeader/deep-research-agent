@@ -69,7 +69,83 @@ fn default_max_concurrency() -> usize {
 pub(crate) struct ToolsConfig {
     pub web_search: WebSearchConfig,
     #[serde(default)]
+    pub fetched: FetchedSettings,
+    #[serde(default)]
     pub web_fetch: deep_research_tools::tools::WebRequestLimits,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FetchedSettings {
+    #[serde(flatten)]
+    pub search: deep_research_tools::tools::search_fetched::FetchedConfig,
+    pub embedding: Option<EmbeddingConfig>,
+    pub reranker: Option<RerankerConfig>,
+}
+
+impl FetchedSettings {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        self.search.validate()?;
+        if let Some(embedding) = &self.embedding {
+            anyhow::ensure!(
+                embedding.request_timeout_secs > 0,
+                "tools.fetched.embedding.request_timeout_secs must be positive"
+            );
+            anyhow::ensure!(
+                !embedding.model.trim().is_empty(),
+                "tools.fetched.embedding.model must not be empty"
+            );
+        }
+        if let Some(reranker) = &self.reranker {
+            anyhow::ensure!(
+                !reranker.model.trim().is_empty(),
+                "tools.fetched.reranker.model must not be empty"
+            );
+            anyhow::ensure!(
+                !reranker.endpoint.trim().is_empty(),
+                "tools.fetched.reranker.endpoint must not be empty"
+            );
+            anyhow::ensure!(
+                reranker
+                    .api_key_env
+                    .as_ref()
+                    .is_none_or(|name| !name.trim().is_empty()),
+                "tools.fetched.reranker.api_key_env must not be empty"
+            );
+            anyhow::ensure!(
+                reranker.request_timeout_secs > 0,
+                "tools.fetched.reranker.request_timeout_secs must be positive"
+            );
+            anyhow::ensure!(
+                (1..=tokio::sync::Semaphore::MAX_PERMITS).contains(&reranker.max_concurrency),
+                "invalid tools.fetched.reranker.max_concurrency"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct EmbeddingConfig {
+    /// ID in [[models]], using an OpenAI-compatible embeddings provider.
+    pub model: String,
+    #[serde(default = "default_retrieval_timeout")]
+    pub request_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct RerankerConfig {
+    /// Model name sent to the Cohere-compatible /rerank endpoint.
+    pub model: String,
+    pub endpoint: String,
+    pub api_key_env: Option<String>,
+    #[serde(default = "default_retrieval_timeout")]
+    pub request_timeout_secs: u64,
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: usize,
+}
+
+fn default_retrieval_timeout() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -370,6 +446,37 @@ mod tests {
         assert_eq!(config.server.port, 8080);
         assert!(config.agent.model.is_none());
         assert!(config.agent.into_must().is_err());
+    }
+
+    #[test]
+    fn fetched_settings_defaults_overrides_and_validation() {
+        use deep_research_tools::tools::search_fetched::FetchedConfig;
+        let defaults: FetchedConfig = toml::from_str("").unwrap();
+        assert_eq!(defaults.chunk_size, 1024);
+        assert_eq!(defaults.default_top_k, 5);
+        assert_eq!(defaults.max_top_k, 20);
+        defaults.validate().unwrap();
+        let custom: FetchedConfig =
+            toml::from_str("chunk_size = 128\ndefault_top_k = 2\nmax_top_k = 4").unwrap();
+        assert_eq!(custom.chunk_size, 128);
+        assert_eq!(custom.default_top_k, 2);
+        assert_eq!(custom.max_top_k, 4);
+        custom.validate().unwrap();
+        for text in [
+            "chunk_size = 0",
+            "default_top_k = 0",
+            "max_top_k = 0",
+            "default_top_k = 21",
+        ] {
+            assert!(
+                toml::from_str::<FetchedConfig>(text)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        let config: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        config.tools.fetched.validate().unwrap();
     }
 
     #[test]

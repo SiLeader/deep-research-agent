@@ -1,5 +1,6 @@
 mod cohere;
 
+#[derive(Clone)]
 pub struct DeepResearchReranker {
     cohere_client: cohere::CohereRerankerClient,
 }
@@ -8,6 +9,24 @@ impl DeepResearchReranker {
     pub fn new(base_url: String) -> Self {
         let cohere_client = cohere::CohereRerankerClient::new(base_url);
         Self { cohere_client }
+    }
+
+    /// Build a Cohere-compatible client with optional bearer authentication,
+    /// a request deadline, and a concurrency budget shared by its clones.
+    pub fn new_with_options(
+        base_url: String,
+        api_key_env: Option<String>,
+        request_timeout_secs: u64,
+        max_concurrency: usize,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            cohere_client: cohere::CohereRerankerClient::new_with_options(
+                base_url,
+                api_key_env,
+                request_timeout_secs,
+                max_concurrency,
+            )?,
+        })
     }
 
     pub async fn rerank(

@@ -56,3 +56,26 @@ max_body_bytes = 2097152
 connect_timeout_secs = 10
 request_timeout_secs = 60
 max_body_bytes = 2097152
+
+# Fresh in-memory database per Explorer invocation; no external models required.
+[tools.fetched]
+# Character limit per evidence chunk; must be positive.
+chunk_size = 1024
+# Search result counts; 0 < default_top_k <= max_top_k.
+default_top_k = 5
+max_top_k = 20
+
+# Optional: reuse an entry in [[models]] with an OpenAI-compatible embedding model.
+# Register that model separately from the chat model; its max_concurrency is shared
+# by all embedding calls. The existing provider supplies endpoint and API key.
+# [tools.fetched.embedding]
+# model = "embedding"
+# request_timeout_secs = 60
+
+# Optional, independent of embedding. Base URL: /rerank is appended once.
+# [tools.fetched.reranker]
+# endpoint = "http://127.0.0.1:8001/v1/"
+# model = "your-reranker-model"
+# api_key_env = "RERANKER_API_KEY" # omit for a server without authentication
+# request_timeout_secs = 60
+# max_concurrency = 1

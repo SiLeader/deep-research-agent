@@ -1,4 +1,5 @@
 use crate::cohere::CohereRerankerClient;
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
@@ -12,7 +13,8 @@ pub(crate) struct CohereRerankRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct CohereRerankResponse {
     pub results: Vec<RerankResult>,
-    pub id: String,
+    #[serde(default, rename = "id")]
+    pub _id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -26,14 +28,19 @@ impl CohereRerankerClient {
         &self,
         request: CohereRerankRequest,
     ) -> anyhow::Result<CohereRerankResponse> {
-        let url = format!("{}/rerank", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await?
-            .error_for_status()?;
+        let _permit = self.semaphore.acquire().await?;
+        let mut builder = self.client.post(self.url.clone()).json(&request);
+        if let Some(name) = &self.api_key_env {
+            let key = std::env::var(name).with_context(|| {
+                format!("Missing reranker API key environment variable: {name}")
+            })?;
+            anyhow::ensure!(
+                !key.trim().is_empty(),
+                "reranker API key environment variable is empty: {name}"
+            );
+            builder = builder.bearer_auth(key);
+        }
+        let response = builder.send().await?.error_for_status()?;
 
         let rerank_response: CohereRerankResponse = response.json().await?;
         Ok(rerank_response)

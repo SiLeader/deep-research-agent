@@ -2,12 +2,18 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use deep_research_agent_tools::ExplorerTool;
 use deep_research_api::DeepResearchServer;
+use deep_research_arbiter::AgentConcurrencyArbiter;
 use deep_research_arbiter::semaphore::SemaphoreConcurrencyArbiter;
 use deep_research_orchestrator::DeepResearchOrchestrator;
 use deep_research_react_agent::ReActAgent;
+use deep_research_reranker::DeepResearchReranker;
 use deep_research_runner::OneshotRunner;
-use deep_research_tools::DeepResearchTools;
+use deep_research_tools::tools::search_fetched::SearchFetchedTool;
 use deep_research_tools::tools::{web_fetch::WebFetchTool, web_search::WebSearchTool};
+use deep_research_tools::{
+    DeepResearchTools,
+    fetched::{Embedder, FetchedDb, Reranker},
+};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatOptions, ToolChoice};
 use genai::resolver::{AuthData, Endpoint};
@@ -66,10 +72,40 @@ async fn main() {
     }
 }
 
-fn build_runners(
+#[derive(Clone)]
+struct ModelRuntime {
+    client: Client,
+    provider_type: config::ProviderType,
+}
+
+struct ModelServices {
+    models: HashMap<String, ModelRuntime>,
+    arbiter: Arc<dyn AgentConcurrencyArbiter>,
+}
+
+impl ModelServices {
+    fn runners(&self) -> HashMap<String, OneshotRunner> {
+        self.models
+            .iter()
+            .map(|(id, runtime)| {
+                (
+                    id.clone(),
+                    OneshotRunner::new(
+                        id.clone(),
+                        runtime.client.clone(),
+                        self.arbiter.clone(),
+                        ChatOptions::default().with_tool_choice(ToolChoice::Required),
+                    ),
+                )
+            })
+            .collect()
+    }
+}
+
+fn build_model_services(
     models: Vec<config::ModelConfig>,
     providers: Vec<config::ProviderConfig>,
-) -> anyhow::Result<HashMap<String, OneshotRunner>> {
+) -> anyhow::Result<ModelServices> {
     let mut provider_map = HashMap::new();
     for provider in providers {
         let id = provider.id.clone();
@@ -92,7 +128,7 @@ fn build_runners(
         }
     }
     let arbiter = Arc::new(SemaphoreConcurrencyArbiter::new(limits));
-    let mut runners = HashMap::new();
+    let mut clients = HashMap::new();
     for model in models {
         let provider = provider_map.get(&model.provider).with_context(|| {
             format!(
@@ -118,17 +154,91 @@ fn build_runners(
                 Ok(target)
             })
             .build();
-        runners.insert(
-            model.id.clone(),
-            OneshotRunner::new(
-                model.id,
+        clients.insert(
+            model.id,
+            ModelRuntime {
                 client,
-                arbiter.clone(),
-                ChatOptions::default().with_tool_choice(ToolChoice::Required),
-            ),
+                provider_type: provider.provider_type.clone(),
+            },
         );
     }
-    Ok(runners)
+    Ok(ModelServices {
+        models: clients,
+        arbiter,
+    })
+}
+
+#[derive(Clone, Default)]
+struct RetrievalModels {
+    embedder: Option<Embedder>,
+    reranker: Option<Reranker>,
+}
+
+impl RetrievalModels {
+    fn new(settings: &config::FetchedSettings, services: &ModelServices) -> anyhow::Result<Self> {
+        settings.validate()?;
+        let embedder = settings
+            .embedding
+            .as_ref()
+            .map(|embedding| {
+                let runtime = services.models.get(&embedding.model).with_context(|| {
+                    format!(
+                        "Unknown tools.fetched.embedding.model ID: {}",
+                        embedding.model
+                    )
+                })?;
+                anyhow::ensure!(
+                    matches!(runtime.provider_type, config::ProviderType::OpenAI),
+                    "tools.fetched.embedding.model requires an OpenAI-compatible provider"
+                );
+                Embedder::new(embedding.model.clone(), runtime.client.clone())
+                    .with_arbiter(services.arbiter.clone())
+                    .with_request_timeout(embedding.request_timeout_secs)
+            })
+            .transpose()?;
+        let reranker = settings
+            .reranker
+            .as_ref()
+            .map(|reranker| {
+                let client = DeepResearchReranker::new_with_options(
+                    reranker.endpoint.clone(),
+                    reranker.api_key_env.clone(),
+                    reranker.request_timeout_secs,
+                    reranker.max_concurrency,
+                )
+                .context("Invalid tools.fetched.reranker configuration")?;
+                Ok::<_, anyhow::Error>(Reranker::new(reranker.model.clone(), client))
+            })
+            .transpose()?;
+        Ok(Self { embedder, reranker })
+    }
+}
+
+async fn build_search_tools(
+    tools: config::ToolsConfig,
+    retrieval: RetrievalModels,
+) -> anyhow::Result<DeepResearchTools> {
+    tools.fetched.validate()?;
+    let db = Arc::new(
+        FetchedDb::new(
+            tools.fetched.search.chunk_size,
+            retrieval.embedder,
+            retrieval.reranker,
+        )
+        .await?,
+    );
+    let mut registry = DeepResearchTools::default();
+    registry.add(
+        WebSearchTool::new_for_searxng_with_limits(
+            &tools.web_search.searxng.endpoint,
+            tools.web_search.searxng.limits,
+            db.clone(),
+        )
+        .context("Invalid tools.web_search.searxng.endpoint")?,
+    );
+    registry.add(WebFetchTool::new(tools.web_fetch, db.clone())?);
+    registry.add(SearchFetchedTool::new(db, tools.fetched.search)?);
+    Ok(registry)
 }
 
 async fn run_server(
@@ -138,7 +248,9 @@ async fn run_server(
     tools: config::ToolsConfig,
     agent: config::MustAgentConfig,
 ) -> anyhow::Result<()> {
-    let runners = build_runners(models, providers)?;
+    let services = build_model_services(models, providers)?;
+    let retrieval = RetrievalModels::new(&tools.fetched, &services)?;
+    let runners = services.runners();
     let runner = |id: &str| {
         runners
             .get(id)
@@ -151,18 +263,12 @@ async fn run_server(
     let explorer_runner = runner(&agent.explorer.model)?;
     let synthesizer_runner = runner(&agent.synthesizer.model)?;
 
-    let mut search_tools = DeepResearchTools::default();
-    search_tools.add(
-        WebSearchTool::new_for_searxng_with_limits(
-            &tools.web_search.searxng.endpoint,
-            tools.web_search.searxng.limits,
-        )
-        .context("Invalid tools.web_search.searxng.endpoint")?,
-    );
-    search_tools.add(WebFetchTool::new(tools.web_fetch)?);
-    let explorer = ExplorerTool::new_with_system_prompt(
+    // Validate and construct once at startup to fail early on invalid tool settings.
+    // This registry is dropped; each Explorer call receives its own fresh database.
+    drop(build_search_tools(tools.clone(), retrieval.clone()).await?);
+    let explorer = ExplorerTool::new_with_tools_factory(
         explorer_runner,
-        search_tools,
+        move || build_search_tools(tools.clone(), retrieval.clone()),
         agent.explorer.system_prompt,
     )?
     .with_max_llm_calls(agent.max_llm_calls)?;
@@ -208,3 +314,6 @@ async fn run_server(
     tracing::info!(%addr, "Starting server");
     DeepResearchServer::new(orchestrator).run(&addr).await
 }
+
+#[cfg(test)]
+mod retrieval_tests;

@@ -844,10 +844,12 @@ dependencies = [
  "deep-research-arbiter",
  "deep-research-orchestrator",
  "deep-research-react-agent",
+ "deep-research-reranker",
  "deep-research-runner",
  "deep-research-tools",
  "genai",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "tracing",
@@ -860,6 +862,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "deep-research-arbiter",
  "deep-research-react-agent",
  "deep-research-runner",
  "deep-research-tools",
@@ -867,6 +870,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -941,6 +945,7 @@ dependencies = [
  "anyhow",
  "reqwest",
  "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -959,6 +964,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "deep-research-arbiter",
  "deep-research-reranker",
  "emvedb",
  "encoding_rs",

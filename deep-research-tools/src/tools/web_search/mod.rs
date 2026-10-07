@@ -1,6 +1,7 @@
 mod searxng;
 
 use crate::DeepResearchTool;
+use crate::fetched::FetchedDb;
 use crate::tools::WebRequestLimits;
 use crate::tools::web_search::searxng::SearxngClient;
 use async_trait::async_trait;
@@ -8,23 +9,26 @@ use chrono::{DateTime, Utc};
 use genai::chat::ToolName;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct WebSearchTool {
     searxng_client: SearxngClient,
+    db: Arc<FetchedDb>,
 }
 
 impl WebSearchTool {
-    pub fn new_for_searxng(origin: &str) -> anyhow::Result<Self> {
-        Self::new_for_searxng_with_limits(origin, WebRequestLimits::default())
+    pub fn new_for_searxng(origin: &str, db: Arc<FetchedDb>) -> anyhow::Result<Self> {
+        Self::new_for_searxng_with_limits(origin, WebRequestLimits::default(), db)
     }
 
     pub fn new_for_searxng_with_limits(
         origin: &str,
         limits: WebRequestLimits,
+        db: Arc<FetchedDb>,
     ) -> anyhow::Result<Self> {
         let searxng_client = SearxngClient::new(origin, limits)?;
-        Ok(Self { searxng_client })
+        Ok(Self { searxng_client, db })
     }
 }
 
@@ -75,13 +79,18 @@ impl DeepResearchTool for WebSearchTool {
         Some(
             "Purpose: Discover web sources using the configured SearXNG search service.\n\
              Input: Provide query as a focused search query.\n\
-             Output: Returns pages with URLs, titles, relevance scores, and publication dates; page bodies are not included.\n\
+             Output: Returns pages with URLs, titles, relevance scores, and publication dates; page bodies are not included. Available snippets are saved for search_fetched.\n\
              When to use: To find candidate sources for a research question. Use fetch on relevant URLs to inspect the source content and assess evidence.",
         )
     }
 
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output> {
         let res = self.searxng_client.search(&args.query).await?;
+        for page in &res.results {
+            if let Some(content) = &page.content {
+                self.db.add_text(&page.url, content).await?;
+            }
+        }
         Ok(res.into())
     }
 }
@@ -90,9 +99,13 @@ impl DeepResearchTool for WebSearchTool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn search_is_a_custom_tool_with_a_nonreserved_string_name() {
-        let tool = WebSearchTool::new_for_searxng("http://localhost/search").unwrap();
+    #[tokio::test]
+    async fn search_is_a_custom_tool_with_a_nonreserved_string_name() {
+        let tool = WebSearchTool::new_for_searxng(
+            "http://localhost/search",
+            Arc::new(FetchedDb::new(1024, None, None).await.unwrap()),
+        )
+        .unwrap();
         assert!(matches!(tool.name(), ToolName::Custom(_)));
         assert_eq!(serde_json::to_value(tool.name()).unwrap(), "search_sources");
         assert_ne!(tool.name().to_string(), "web_search");
@@ -119,7 +132,13 @@ mod tests {
                 })
                 .build();
             let mut tools = crate::DeepResearchTools::default();
-            tools.add(WebSearchTool::new_for_searxng("http://localhost/search").unwrap());
+            tools.add(
+                WebSearchTool::new_for_searxng(
+                    "http://localhost/search",
+                    Arc::new(FetchedDb::new(1024, None, None).await.unwrap()),
+                )
+                .unwrap(),
+            );
             let _ = client
                 .exec_chat(
                     "test-model",
@@ -147,12 +166,15 @@ mod tests {
     async fn dispatches_search_and_accepts_realistic_results() {
         use crate::tools::http::tests::server;
         let body = serde_json::json!({"results": [
-            {"url": "https://example.com", "title": "Example", "score": 1.0},
+            {"url": "https://example.com", "title": "Example", "score": 1.0, "content": "apple orchard"},
             {"url": "https://example.org", "title": "Dated", "score": 0.5, "publishedDate": "2026-10-06T00:00:00Z"}
         ]}).to_string();
         let (addr, task) = server(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())).await;
+        let db = Arc::new(FetchedDb::new(1024, None, None).await.unwrap());
         let mut registry = crate::DeepResearchTools::default();
-        registry.add(WebSearchTool::new_for_searxng(&format!("http://{addr}/search")).unwrap());
+        registry.add(
+            WebSearchTool::new_for_searxng(&format!("http://{addr}/search"), db.clone()).unwrap(),
+        );
         let output = registry
             .call("search_sources", serde_json::json!({"query": "test query"}))
             .await
@@ -160,6 +182,10 @@ mod tests {
             .unwrap();
         assert!(output["pages"][0]["published_date"].is_null());
         assert_eq!(output["pages"][1]["published_date"], "2026-10-06T00:00:00Z");
+        assert_eq!(
+            db.search("apple", 5).await.unwrap()[0].url,
+            "https://example.com"
+        );
         let request = String::from_utf8(task.await.unwrap()).unwrap();
         assert!(request.starts_with("GET /search?format=json&q=test+query "));
     }

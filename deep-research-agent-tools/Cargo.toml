@@ -18,3 +18,7 @@ async-trait = { workspace = true }
 genai = { workspace = true }
 
 anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+deep-research-arbiter = { workspace = true }

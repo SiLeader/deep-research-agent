@@ -61,6 +61,7 @@ deep-research-arbiter = { workspace = true, features = ["semaphore"] }
 deep-research-react-agent = { workspace = true }
 deep-research-runner = { workspace = true }
 deep-research-tools = { workspace = true }
+deep-research-reranker = { workspace = true }
 genai = { workspace = true }
 deep-research-orchestrator = { workspace = true }
 
@@ -75,3 +76,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 clap = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

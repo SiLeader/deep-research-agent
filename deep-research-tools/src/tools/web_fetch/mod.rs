@@ -1,4 +1,5 @@
 use crate::DeepResearchTool;
+use crate::fetched::FetchedDb;
 use crate::tools::{WebRequestLimits, http::bounded_body};
 use async_trait::async_trait;
 use genai::chat::ToolName;
@@ -13,23 +14,18 @@ use public_network::{PublicDns, validate_url};
 pub struct WebFetchTool {
     client: reqwest::Client,
     limits: WebRequestLimits,
-}
-
-impl Default for WebFetchTool {
-    fn default() -> Self {
-        Self::new(WebRequestLimits::default()).expect("Failed to build fetch HTTP client")
-    }
+    db: Arc<FetchedDb>,
 }
 
 impl WebFetchTool {
-    pub fn new(limits: WebRequestLimits) -> anyhow::Result<Self> {
+    pub fn new(limits: WebRequestLimits, db: Arc<FetchedDb>) -> anyhow::Result<Self> {
         let client = limits
             .client_builder()?
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .dns_resolver(Arc::new(PublicDns))
             .build()?;
-        Ok(Self { client, limits })
+        Ok(Self { client, limits, db })
     }
 
     async fn fetch(&self, mut url: reqwest::Url) -> anyhow::Result<WebFetchOutput> {
@@ -57,9 +53,27 @@ impl WebFetchTool {
             let encoding =
                 encoding_rs::Encoding::for_label(charset.as_bytes()).unwrap_or(encoding_rs::UTF_8);
             let body = bounded_body(res, self.limits.max_body_bytes).await?;
+            let mut stored = false;
+            if (200..300).contains(&status_code)
+                && let Some(kind) = &content_type
+            {
+                let content = encoding.decode(&body).0.into_owned();
+                if kind.essence_str() == "text/html"
+                    || kind.essence_str() == "application/xhtml+xml"
+                {
+                    let markdown = htmd::convert(&content)?;
+                    self.db.add_text(url.as_str(), &markdown).await?;
+                    stored = !markdown.trim().is_empty();
+                } else if matches!(kind.essence_str(), "text/plain" | "text/markdown") {
+                    self.db.add_text(url.as_str(), &content).await?;
+                    stored = !content.trim().is_empty();
+                }
+            }
             return Ok(WebFetchOutput {
                 status_code,
-                content: encoding.decode(&body).0.into_owned(),
+                url: url.to_string(),
+                content_type: content_type.map(|kind| kind.to_string()),
+                stored,
             });
         }
         unreachable!("redirect limit is checked before continuing")
@@ -80,10 +94,12 @@ pub struct WebFetchOutput {
         description = "The HTTP status code of the response. Check it before using the response body as source evidence."
     )]
     pub status_code: u16,
-    #[schemars(
-        description = "The HTTP response body decoded as text. It may contain raw HTML or an error page; it is not extracted article text or rendered browser content."
-    )]
-    pub content: String,
+    /// Final source URL after redirects. Use it when citing retrieved content.
+    pub url: String,
+    /// Parsed Content-Type, if supplied by the server.
+    pub content_type: Option<String>,
+    /// True when nonempty supported content was saved. Read it using search_fetched.
+    pub stored: bool,
 }
 
 #[async_trait]
@@ -99,8 +115,8 @@ impl DeepResearchTool for WebFetchTool {
         Some(
             "Purpose: Retrieve a known URL with an HTTP GET request.\n\
              Input: Provide url as an absolute HTTP or HTTPS URL.\n\
-             Output: Returns status_code and the response body as text, including raw HTML when supplied by the server. Non-success HTTP responses are also returned.\n\
-             When to use: To inspect a source page or verify evidence after discovering its URL. Check status_code before interpreting content. JavaScript is not executed.",
+             Output: Returns status_code, final url, content_type, and stored. Successful HTML, plain text, and Markdown are saved for search_fetched; error pages and unsupported or missing content types are not indexed.\n\
+             When to use: To inspect a source page or verify evidence after discovering its URL. Use search_fetched to read saved evidence. Check status_code and stored. JavaScript is not executed.",
         )
     }
 
@@ -122,7 +138,7 @@ mod tests {
 
     // Test-only DNS pinning lets a public URL reach the local fixture. Production
     // constructors always install PublicDns and cannot override this restriction.
-    fn fixture_tool(addr: std::net::SocketAddr, limits: WebRequestLimits) -> WebFetchTool {
+    async fn fixture_tool(addr: std::net::SocketAddr, limits: WebRequestLimits) -> WebFetchTool {
         let client = limits
             .client_builder()
             .unwrap()
@@ -131,12 +147,114 @@ mod tests {
             .resolve("public.example", addr)
             .build()
             .unwrap();
-        WebFetchTool { client, limits }
+        WebFetchTool {
+            client,
+            limits,
+            db: Arc::new(FetchedDb::new(1024, None, None).await.unwrap()),
+        }
+    }
+
+    #[tokio::test]
+    async fn indexes_only_successful_supported_nonempty_content() {
+        for (status, kind, body, stored) in [
+            (200, Some("text/html"), "<h1>apple</h1><p>orchard</p>", true),
+            (
+                200,
+                Some("application/xhtml+xml"),
+                "<p>apple orchard</p>",
+                true,
+            ),
+            (200, Some("text/plain"), "apple orchard", true),
+            (200, Some("text/markdown"), "# apple orchard", true),
+            (404, Some("text/html"), "<p>apple orchard</p>", false),
+            (200, Some("application/pdf"), "apple orchard", false),
+            (200, None, "apple orchard", false),
+            (200, Some("text/plain"), "  ", false),
+            (200, Some("text/html"), "<p> </p>", false),
+        ] {
+            let header = kind
+                .map(|kind| format!("Content-Type: {kind}\r\n"))
+                .unwrap_or_default();
+            let (addr, task) = server(format!("HTTP/1.1 {status} Test\r\n{header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())).await;
+            let tool = fixture_tool(addr, WebRequestLimits::default()).await;
+            let mut registry = crate::DeepResearchTools::default();
+            registry.add(tool.clone());
+            registry.add(
+                crate::tools::search_fetched::SearchFetchedTool::new(
+                    tool.db.clone(),
+                    Default::default(),
+                )
+                .unwrap(),
+            );
+            let result = registry.call("fetch", serde_json::json!({"url": format!("http://public.example:{}/page", addr.port())})).await.unwrap().unwrap();
+            assert_eq!(result["stored"], stored);
+            assert!(result.get("content").is_none());
+            let found = registry
+                .call(
+                    "search_fetched",
+                    serde_json::json!({"query": "apple", "top_k": null}),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let chunks = found["chunks"].as_array().unwrap();
+            assert_eq!(!chunks.is_empty(), stored);
+            if stored {
+                assert_eq!(chunks[0]["url"], result["url"]);
+                assert!(!chunks[0]["content"].as_str().unwrap().contains("<p>"));
+            }
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_failure_is_reported_without_indexing_evidence() {
+        use genai::{
+            Client, ModelIden, ServiceTarget,
+            adapter::AdapterKind,
+            resolver::{AuthData, Endpoint},
+        };
+        let response = serde_json::json!({"object": "list", "model": "test", "data": [{"object": "embedding", "index": 0, "embedding": [0.0, 0.0]}], "usage": {"prompt_tokens": 1, "total_tokens": 1}}).to_string();
+        let (embed_addr, embed_task) = server(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len())).await;
+        let client = Client::builder()
+            .with_service_target_resolver_fn(move |_: ServiceTarget| {
+                Ok(ServiceTarget {
+                    model: ModelIden::new(AdapterKind::OpenAI, "test"),
+                    auth: AuthData::from_single("test"),
+                    endpoint: Endpoint::from_owned(format!("http://{embed_addr}/")),
+                })
+            })
+            .build();
+        let (addr, task) = server("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\napple".into()).await;
+        let mut tool = fixture_tool(addr, WebRequestLimits::default()).await;
+        tool.db = Arc::new(
+            FetchedDb::new(
+                1024,
+                Some(crate::fetched::Embedder::new("test", client)),
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+        let error = tool
+            .call(WebFetchArgs {
+                url: format!("http://public.example:{}/", addr.port()),
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("zero embedding vector"));
+        assert!(tool.db.search("apple", 5).await.unwrap().is_empty());
+        task.await.unwrap();
+        embed_task.await.unwrap();
     }
 
     #[tokio::test]
     async fn rejects_literal_and_dns_loopback_destinations() {
-        let tool = WebFetchTool::default();
+        let tool = WebFetchTool::new(
+            WebRequestLimits::default(),
+            Arc::new(FetchedDb::new(1024, None, None).await.unwrap()),
+        )
+        .unwrap();
         for url in ["http://127.0.0.1/", "http://[::1]/", "http://localhost/"] {
             let error = tool
                 .call(WebFetchArgs { url: url.into() })
@@ -149,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn blocks_private_redirects_before_connecting() {
         let (addr, task) = server("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into()).await;
-        let tool = fixture_tool(addr, WebRequestLimits::default());
+        let tool = fixture_tool(addr, WebRequestLimits::default()).await;
         let error = tool
             .call(WebFetchArgs {
                 url: format!("http://public.example:{}/", addr.port()),
@@ -174,7 +292,8 @@ mod tests {
                     max_body_bytes: limit,
                     ..Default::default()
                 },
-            );
+            )
+            .await;
             let result = tool
                 .call(WebFetchArgs {
                     url: format!("http://public.example:{}/", addr.port()),
@@ -185,7 +304,8 @@ mod tests {
             } else {
                 let result = result.unwrap();
                 assert_eq!(result.status_code, 404);
-                assert_eq!(result.content, "hello");
+                assert!(!result.stored);
+                assert!(tool.db.search("hello", 5).await.unwrap().is_empty());
             }
             task.await.unwrap();
         }
@@ -205,7 +325,8 @@ mod tests {
                 request_timeout_secs: 1,
                 ..Default::default()
             },
-        );
+        )
+        .await;
         let result = tokio::time::timeout(
             Duration::from_secs(3),
             tool.call(WebFetchArgs {
@@ -222,14 +343,18 @@ mod tests {
     async fn follows_public_redirects_and_preserves_charset_decoding() {
         let (final_addr, final_task) = server("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-16le\r\nContent-Length: 4\r\nConnection: close\r\n\r\nh\0i\0".into()).await;
         let (addr, task) = server(format!("HTTP/1.1 302 Found\r\nLocation: http://public.example:{}/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", final_addr.port())).await;
-        let tool = fixture_tool(addr, WebRequestLimits::default());
+        let tool = fixture_tool(addr, WebRequestLimits::default()).await;
         let result = tool
             .call(WebFetchArgs {
                 url: format!("http://public.example:{}/", addr.port()),
             })
             .await
             .unwrap();
-        assert_eq!(result.content, "hi");
+        assert!(result.stored);
+        let found = tool.db.search("hi", 5).await.unwrap();
+        assert_eq!(found[0].content, "hi");
+        assert_eq!(found[0].url, result.url);
+        assert!(result.url.ends_with("/final"));
         assert_eq!(result.status_code, 200);
         task.await.unwrap();
         final_task.await.unwrap();

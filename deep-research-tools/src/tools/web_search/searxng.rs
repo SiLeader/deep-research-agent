@@ -19,6 +19,8 @@ pub(super) struct SearxngSearchResponse {
 pub(super) struct SearxngSearchResult {
     pub url: String,
     pub title: String,
+    #[serde(default)]
+    pub content: Option<String>,
     pub score: f32,
     #[serde(default, rename = "publishedDate", alias = "published_date")]
     pub published_date: Option<DateTime<Utc>>,
