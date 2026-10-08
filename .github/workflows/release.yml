@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without a v prefix (e.g. 0.1.0 or 0.2.0-rc.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check requested version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      matches: ${{ steps.check.outputs.matches }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate and compare versions
+        id: check
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          pattern = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+          match = re.fullmatch(pattern, version)
+          if match is None or len(version) > 128:
+              raise SystemExit("::error::Expected a SemVer without a v prefix or build metadata, at most 128 characters.")
+          if match[4] and any(
+              part.isdigit() and len(part) > 1 and part.startswith("0")
+              for part in match[4].split(".")
+          ):
+              raise SystemExit("::error::Numeric prerelease identifiers must not have leading zeros.")
+          if not os.environ["GITHUB_REF"].startswith("refs/heads/"):
+              raise SystemExit("::error::Run this workflow on a branch, not a tag.")
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          current = manifest["workspace"]["package"]["version"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\n")
+              output.write(f"matches={str(version == current).lower()}\n")
+          PY
+
+  update-version:
+    name: Create version update PR
+    needs: version
+    if: needs.version.outputs.matches == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Update workspace version and lockfile
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          section = re.search(r"(?ms)^\[workspace\.package\][^\S\n]*\n(.*?)(?=^\[|\Z)", text)
+          if section is None:
+              raise SystemExit("::error::Could not find [workspace.package].")
+          updated, count = re.subn(
+              r'(?m)^version\s*=\s*"[^"]*"',
+              f'version = "{os.environ["VERSION"]}"',
+              section[1],
+          )
+          if count != 1:
+              raise SystemExit("::error::Expected exactly one workspace.package.version.")
+          text = text[:section.start(1)] + updated + text[section.end(1):]
+          if tomllib.loads(text)["workspace"]["package"]["version"] != os.environ["VERSION"]:
+              raise SystemExit("::error::Workspace version update failed.")
+          path.write_text(text)
+          PY
+          cargo update --workspace
+      - name: Create pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BASE: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          branch="release/version-${VERSION}"
+          remote_sha=$(git ls-remote --heads origin "refs/heads/${branch}" | cut -f1)
+          git switch -c "$branch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump workspace version to ${VERSION}" \
+            -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+          git push --force-with-lease="refs/heads/${branch}:${remote_sha}" origin "HEAD:refs/heads/${branch}"
+
+          title="chore: bump workspace version to ${VERSION}"
+          body="Updates workspace.package.version and the workspace packages in Cargo.lock to ${VERSION}.
+
+          No container image or release is published by this run. After merging, run the Release workflow again on the updated branch with the same version."
+          pr=$(gh pr list --base "$BASE" --head "$branch" --state open --json number --jq '.[0].number // empty')
+          if [[ -n "$pr" ]]; then
+            gh pr edit "$pr" --title "$title" --body "$body"
+          else
+            gh pr create --base "$BASE" --head "$branch" --title "$title" --body "$body"
+          fi
+
+  verify:
+    name: Verify release
+    needs: version
+    if: needs.version.outputs.matches == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish image and release
+    needs: [version, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      IMAGE: ghcr.io/sileader/deep-research-agent
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Check release tag is available
+        run: |
+          if git show-ref --verify --quiet "refs/tags/v${VERSION}"; then
+            echo "::error::Tag v${VERSION} already exists."
+            exit 1
+          fi
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/sileader/deep-research-agent:latest
+            ghcr.io/sileader/deep-research-agent:${{ needs.version.outputs.version }}
+            ghcr.io/sileader/deep-research-agent:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Create GitHub release
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags=()
+          if [[ "$VERSION" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "v${VERSION}" \
+            --target "$GITHUB_SHA" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            --notes "Container image: \`${IMAGE}:${VERSION}\` (also tagged \`latest\` and \`${GITHUB_SHA}\`)." \
+            "${flags[@]}"

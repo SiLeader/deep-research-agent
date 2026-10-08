@@ -234,7 +234,31 @@ data: {"model":"default","step":0,"phase":"ResearchStepCompleted","data":{"findi
 cargo build --workspace
 cargo test --workspace
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 ```
+
+### CIとリリース
+
+**CI**ワークフローはpushとPRでフォーマット、Clippy、ワークスペースのテストを確認します。手動実行も可能です。
+ワークフローのActionはGitHub公式とverified publisherであるDockerのもののみを使用します。
+Rust・Cargo・`gh`はランナーにプリインストールされたものを使います。
+コンテナのビルドには`Dockerfile`で指定したRustイメージを使用します。
+
+Actionsタブからブランチを選んで**Release**を実行し、`version`に`v`接頭辞なしのSemVer
+（例：`0.2.0`、`0.2.0-rc.1`）を指定してください。ビルドメタデータ（`+...`）はコンテナタグに使えないため非対応です。
+`Cargo.toml`の`workspace.package.version`と異なる場合は、`Cargo.toml`と`Cargo.lock`を更新するPRを
+選択したブランチに対して作成し、公開せずに終了します。PRをマージした後、同じバージョンでReleaseを再実行してください。
+
+バージョンが一致した場合は、CI通過後に`ghcr.io/sileader/deep-research-agent`へ
+`latest`、指定したバージョン、完全なコミットSHAの3つのタグでイメージをpushし、そのコミットに
+`v<version>`タグのGitHub Releaseを作成します。プレリリース接尾辞付きのバージョンはプレリリースとして公開します。
+既存のリリースタグがある場合はエラーになります。
+
+認証には`GITHUB_TOKEN`を使います。Settings > Actions > Generalで
+**Allow GitHub Actions to create and approve pull requests**を有効にしてください。
+GHCRパッケージが既に存在する場合は、このトークンによる書き込みを許可する必要があります。
+このトークンで作成したPRではCIが自動起動しないため、マージ前にチェックが必要な場合は
+バージョン更新ブランチでCIを手動実行してください。
 
 | クレート                     | 役割                                                         |
 |------------------------------|--------------------------------------------------------------|

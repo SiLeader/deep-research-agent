@@ -236,7 +236,30 @@ research-result formats are incompatible.
 cargo build --workspace
 cargo test --workspace
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 ```
+
+### CI and releases
+
+The **CI** workflow runs formatting, Clippy, and workspace tests on pushes and pull requests. It can also be run manually.
+Workflows use only GitHub-official Actions and Docker's verified-publisher Actions.
+Rust, Cargo, and `gh` use the runner's preinstalled tools.
+The container build uses the Rust image specified in `Dockerfile`.
+
+Run **Release** from the Actions tab on a branch, supplying `version` as SemVer without a `v` prefix
+(for example, `0.2.0` or `0.2.0-rc.1`). Build metadata (`+...`) is not supported because it is invalid in container tags.
+If the value differs from `Cargo.toml`'s `workspace.package.version`, the workflow opens a PR against the selected
+branch updating `Cargo.toml` and `Cargo.lock`, then stops without publishing. Merge the PR and run Release again
+with the same version.
+
+When versions match, CI must pass before the workflow pushes `ghcr.io/sileader/deep-research-agent` with
+`latest`, the exact version, and the full commit SHA as tags, then creates a GitHub Release tagged `v<version>`
+at that commit. Versions containing a prerelease suffix create prereleases. Existing release tags are rejected.
+
+The workflow uses `GITHUB_TOKEN`; enable **Allow GitHub Actions to create and approve pull requests** in
+Settings > Actions > General. The token also needs write access to the GHCR package if it already exists.
+PRs created with this token do not automatically trigger CI; run CI manually on the version-update branch
+if checks are required before merging.
 
 | Crate                        | Responsibility                                              |
 |------------------------------|-------------------------------------------------------------|
