@@ -28,7 +28,18 @@ impl WebFetchTool {
         Ok(Self { client, limits, db })
     }
 
-    async fn fetch(&self, mut url: reqwest::Url) -> anyhow::Result<WebFetchOutput> {
+    /// Reuse this tool's HTTP client and connection pool with another database.
+    pub fn with_db(&self, db: Arc<FetchedDb>) -> Self {
+        Self {
+            client: self.client.clone(),
+            limits: self.limits.clone(),
+            db,
+        }
+    }
+
+    /// Follow redirects and read the bounded body. The request deadline covers
+    /// only this network phase, not the indexing that follows.
+    async fn retrieve(&self, mut url: reqwest::Url) -> anyhow::Result<Retrieved> {
         for redirect_count in 0..=10 {
             validate_url(&url)?;
             let res = self.client.get(url.clone()).send().await?;
@@ -46,36 +57,51 @@ impl WebFetchTool {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<mime::Mime>().ok());
             let body = bounded_body(res, self.limits.max_body_bytes).await?;
-            let mut stored = false;
-            if (200..300).contains(&status_code)
-                && let Some(kind) = &content_type
-            {
-                let is_html = matches!(kind.essence_str(), "text/html" | "application/xhtml+xml");
-                let charset = kind.get_param("charset").map(|charset| charset.as_str());
-                let content = detect_encoding(&body, charset, is_html)
-                    .decode(&body)
-                    .0
-                    .into_owned();
-                if is_html {
-                    // Converting a large page is CPU-bound; keep it off the async workers.
-                    let markdown =
-                        tokio::task::spawn_blocking(move || htmd::convert(&content)).await??;
-                    self.db.add_text(url.as_str(), &markdown).await?;
-                    stored = !markdown.trim().is_empty();
-                } else if matches!(kind.essence_str(), "text/plain" | "text/markdown") {
-                    self.db.add_text(url.as_str(), &content).await?;
-                    stored = !content.trim().is_empty();
-                }
-            }
-            return Ok(WebFetchOutput {
+            return Ok(Retrieved {
+                url,
                 status_code,
-                url: url.to_string(),
-                content_type: content_type.map(|kind| kind.to_string()),
-                stored,
+                content_type,
+                body,
             });
         }
         unreachable!("redirect limit is checked before continuing")
     }
+
+    /// Save successful supported content. Embedding large pages may take longer
+    /// than the request deadline, so it is bounded by the embedder's own timeout.
+    async fn store(&self, retrieved: &Retrieved) -> anyhow::Result<bool> {
+        let Some(kind) = retrieved
+            .content_type
+            .as_ref()
+            .filter(|_| (200..300).contains(&retrieved.status_code))
+        else {
+            return Ok(false);
+        };
+        let body = &retrieved.body;
+        let is_html = matches!(kind.essence_str(), "text/html" | "application/xhtml+xml");
+        let charset = kind.get_param("charset").map(|charset| charset.as_str());
+        let content = detect_encoding(body, charset, is_html)
+            .decode(body)
+            .0
+            .into_owned();
+        let text = if is_html {
+            // Converting a large page is CPU-bound; keep it off the async workers.
+            tokio::task::spawn_blocking(move || htmd::convert(&content)).await??
+        } else if matches!(kind.essence_str(), "text/plain" | "text/markdown") {
+            content
+        } else {
+            return Ok(false);
+        };
+        self.db.add_text(retrieved.url.as_str(), &text).await?;
+        Ok(!text.trim().is_empty())
+    }
+}
+
+struct Retrieved {
+    url: reqwest::Url,
+    status_code: u16,
+    content_type: Option<mime::Mime>,
+    body: Vec<u8>,
 }
 
 /// Choose the decoder by byte-order mark, then the Content-Type charset, then
@@ -182,12 +208,19 @@ impl DeepResearchTool for WebFetchTool {
 
     async fn call(&self, args: Self::Args) -> anyhow::Result<Self::Output> {
         let url = reqwest::Url::parse(&args.url)?;
-        tokio::time::timeout(
+        let retrieved = tokio::time::timeout(
             Duration::from_secs(self.limits.request_timeout_secs),
-            self.fetch(url),
+            self.retrieve(url),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("fetch request timed out"))?
+        .map_err(|_| anyhow::anyhow!("fetch request timed out"))??;
+        let stored = self.store(&retrieved).await?;
+        Ok(WebFetchOutput {
+            status_code: retrieved.status_code,
+            url: retrieved.url.to_string(),
+            content_type: retrieved.content_type.map(|kind| kind.to_string()),
+            stored,
+        })
     }
 }
 
@@ -304,6 +337,58 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("zero embedding vector"));
         assert!(tool.db.search("apple", 5).await.unwrap().is_empty());
+        task.await.unwrap();
+        embed_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_timeout_does_not_bound_indexing() {
+        use crate::tools::http::tests::delayed_server;
+        use genai::{
+            Client, ModelIden, ServiceTarget,
+            adapter::AdapterKind,
+            resolver::{AuthData, Endpoint},
+        };
+        let response = serde_json::json!({"object": "list", "model": "test", "data": [{"object": "embedding", "index": 0, "embedding": [1.0, 0.0]}], "usage": {"prompt_tokens": 1, "total_tokens": 1}}).to_string();
+        let (embed_addr, embed_task) = delayed_server(
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()),
+            Duration::from_millis(1_500),
+        )
+        .await;
+        let client = Client::builder()
+            .with_service_target_resolver_fn(move |_: ServiceTarget| {
+                Ok(ServiceTarget {
+                    model: ModelIden::new(AdapterKind::OpenAI, "test"),
+                    auth: AuthData::from_single("test"),
+                    endpoint: Endpoint::from_owned(format!("http://{embed_addr}/")),
+                })
+            })
+            .build();
+        let (addr, task) = server("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\napple".into()).await;
+        let tool = fixture_tool(
+            addr,
+            WebRequestLimits {
+                request_timeout_secs: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .with_db(Arc::new(
+            FetchedDb::new(
+                1024,
+                Some(crate::fetched::Embedder::new("test", client)),
+                None,
+            )
+            .await
+            .unwrap(),
+        ));
+        let result = tool
+            .call(WebFetchArgs {
+                url: format!("http://public.example:{}/", addr.port()),
+            })
+            .await
+            .unwrap();
+        assert!(result.stored);
         task.await.unwrap();
         embed_task.await.unwrap();
     }

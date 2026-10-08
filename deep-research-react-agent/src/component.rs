@@ -44,7 +44,7 @@ impl ReActAgent {
                 }
             }
             Err(e) => AgentEvent::Error(event::ErrorEvent {
-                error: e.to_string(),
+                error: format!("{e:#}"),
             }),
         }
     }
@@ -89,7 +89,7 @@ impl ReActAgent {
                     {
                         Ok(Some(value)) => value.to_string(),
                         Ok(None) => "Tool not found".to_string(),
-                        Err(e) => format!("Tool call failed: {}", e),
+                        Err(e) => format!("Tool call failed: {e:#}"),
                     }
                 };
                 ToolResponse {

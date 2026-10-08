@@ -1,7 +1,7 @@
 use actix_web::post;
 use actix_web::web::{Data, Json};
-use deep_research_orchestrator::DeepResearchOrchestrator;
-use deep_research_orchestrator::plan::DeepResearchPlan;
+use deep_research_orchestrator::plan::{DeepResearchPlan, validate_prompt};
+use deep_research_orchestrator::{Busy, DeepResearchOrchestrator};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -16,6 +16,7 @@ pub(super) async fn plan_create(
     json: Json<PlanCreateRequest>,
 ) -> actix_web::Result<actix_web::HttpResponse> {
     let json = json.into_inner();
+    validate_prompt(&json.prompt).map_err(actix_web::error::ErrorBadRequest)?;
     let plan = if let Some(prev_plan) = json.previous_plan {
         prev_plan
             .validate()
@@ -26,6 +27,7 @@ pub(super) async fn plan_create(
     };
     match plan {
         Ok(plan) => Ok(actix_web::HttpResponse::Ok().json(plan)),
+        Err(error) if error.is::<Busy>() => Ok(super::busy_response()),
         Err(error) => {
             tracing::error!("Planning failed: {error:#}");
             Ok(actix_web::HttpResponse::InternalServerError()

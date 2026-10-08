@@ -132,7 +132,7 @@ async fn structured_pipeline_passes_schemas_retry_feedback_and_final_report() {
         let orchestrator = DeepResearchOrchestrator::new(agent.clone(), agent.clone(), agent.clone(), agent);
         let planned = orchestrator.plan("question".into()).await.unwrap();
         assert_eq!(serde_json::to_value(&planned).unwrap(), plan);
-        let events: Vec<_> = orchestrator.run_deep_research(planned).collect().await;
+        let events: Vec<_> = orchestrator.run_deep_research(planned).unwrap().collect().await;
         let events: Vec<Value> = events.into_iter().map(|event| serde_json::to_value(event).unwrap()).collect();
         assert!(events.iter().all(|event| event["phase"] != "Failed"), "{events:?}");
         assert_eq!(events.last().unwrap()["phase"], "Synthesized");
@@ -214,7 +214,7 @@ async fn total_llm_call_budget_fails_the_research() {
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         });
         let limits = ResearchLimits { max_total_llm_calls: Some(1), ..Default::default() };
-        let events: Vec<_> = fixture_orchestrator(addr, limits).run_deep_research(plan()).collect().await;
+        let events: Vec<_> = fixture_orchestrator(addr, limits).run_deep_research(plan()).unwrap().collect().await;
         let last = serde_json::to_value(events.last().unwrap()).unwrap();
         assert_eq!(last["phase"], "Failed");
         assert_eq!(last["step"], 0);
@@ -238,6 +238,7 @@ async fn research_deadline_fails_the_research() {
         };
         let events: Vec<_> = fixture_orchestrator(addr, limits)
             .run_deep_research(plan())
+            .unwrap()
             .collect()
             .await;
         let last = serde_json::to_value(events.last().unwrap()).unwrap();
@@ -270,8 +271,71 @@ fn research_limits_reject_zero_values() {
             max_total_llm_calls: Some(0),
             ..Default::default()
         },
+        ResearchLimits {
+            max_concurrent_requests: Some(0),
+            ..Default::default()
+        },
     ] {
         assert!(limits.validate().is_err());
     }
     ResearchLimits::default().validate().unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_request_limit_rejects_extra_requests_until_released() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            loop {
+                sockets.push(listener.accept().await.unwrap().0);
+            }
+        });
+        let limits = ResearchLimits {
+            max_concurrent_requests: Some(1),
+            ..Default::default()
+        };
+        let orchestrator = fixture_orchestrator(addr, limits);
+        let running = orchestrator.clone().run_deep_research(plan()).unwrap();
+        assert!(orchestrator.clone().run_deep_research(plan()).is_err());
+        let error = orchestrator.plan("question".into()).await.unwrap_err();
+        assert!(error.is::<Busy>(), "{error:#}");
+        drop(running);
+        // The slot is released once the aborted research task is dropped.
+        loop {
+            if let Ok(stream) = orchestrator.clone().run_deep_research(plan()) {
+                drop(stream);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        server.abort();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn planning_deadline_fails_the_plan() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            futures::future::pending::<()>().await;
+        });
+        let limits = ResearchLimits {
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        };
+        let error = fixture_orchestrator(addr, limits)
+            .plan("question".into())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("time limit"), "{error:#}");
+        server.abort();
+    })
+    .await
+    .unwrap();
 }

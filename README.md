@@ -62,13 +62,14 @@ See [config.example.toml](config.example.toml) for the full starting configurati
 
 | Setting                                                                                 | Meaning                                                                                              |
 |-----------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| `server.host`, `server.port`                                                            | Listen address; defaults to `127.0.0.1:8080`.                                                        |
+| `server.host`, `server.port`                                                            | Listen address; defaults to `127.0.0.1:8080`. In a container, set `host = "0.0.0.0"` to accept outside connections. |
 | `server.api_key_env`                                                                    | Optional environment variable holding a token; `/api/` routes then require `Authorization: Bearer <token>`. |
 | `agent.model`                                                                           | Default model ID for all roles.                                                                      |
 | `agent.max_llm_calls`                                                                   | Maximum LLM calls per agent invocation, including Explorer; defaults to `30` and must be positive.   |
 | `agent.max_research_loops`                                                              | Research/review cycles per research step before it fails; defaults to `10`.                         |
-| `agent.max_total_llm_calls`                                                             | LLM requests per research request across all agents, Explorer, and retries; defaults to `2000`.      |
-| `agent.research_timeout_secs`                                                           | Deadline for a whole research request, including synthesis; defaults to `3600`.                     |
+| `agent.max_total_llm_calls`                                                             | LLM requests per research or planning request across all agents, Explorer, and retries; defaults to `2000`. |
+| `agent.research_timeout_secs`                                                           | Deadline for a whole research request, including synthesis, and for each planning request; defaults to `3600`. |
+| `agent.max_concurrent_requests`                                                         | Planning and research requests running at once; further requests receive HTTP `503`. Defaults to `4`. |
 | `agent.max_tool_context_chars`                                                          | Tool output kept in each agent's conversation; older outputs are elided first. Defaults to `200000`. |
 | `agent.<role>.model`                                                                    | Model ID override for `planner`, `research`, `gap_judger`, `explorer`, or `synthesizer`.             |
 | `agent.<role>.system_prompt`                                                            | Inline system prompt override; omitted prompts use embedded files in `src/assets/`.                  |
@@ -177,8 +178,12 @@ The response has this structure (goals below are illustrative):
 ```
 
 To revise a plan, send `prompt` and an optional `previous_plan` containing the complete plan object to the same
-endpoint. The response is the complete revised plan. An invalid `previous_plan` returns HTTP `400`; planning failures
-return HTTP `500` and are logged.
+endpoint. The response is the complete revised plan. A blank `prompt`, a `prompt` over 20,000 characters, or an
+invalid `previous_plan` returns HTTP `400`; planning failures return HTTP `500` and are logged.
+
+Plans may contain at most 20 research steps, 20 questions per step, and 30 report sections, with at most 4,000
+characters per string. Larger plans are rejected with HTTP `400`. When `agent.max_concurrent_requests` requests are
+already running, the plan and research endpoints return HTTP `503` with `Retry-After`.
 
 When `server.api_key_env` is set, add `-H "Authorization: Bearer $API_KEY"` to `/api/` requests. Unauthenticated
 requests receive HTTP `401`. Without it the server logs a warning at startup; do not expose such a server publicly.
@@ -225,10 +230,13 @@ research-result formats are incompatible.
   proxies. Internal, loopback, link-local, and reserved IP ranges are rejected. Configured LLM and SearXNG endpoints may
   still be internal.
 - SearXNG results require `url`, `title`, and `score`; publication dates (`publishedDate`) may be missing or null.
+  Dates without a UTC offset are treated as UTC, and unparsable dates become null.
   Returned pages expose `published_date` as a UTC timestamp or null.
 - Each agent invocation is bounded by `agent.max_llm_calls`; research steps by `agent.max_research_loops`; each
   research request by `agent.max_total_llm_calls` and `agent.research_timeout_secs`. Chat requests time out according to `models[].request_timeout_secs` and release their model concurrency slot; the deadline does not include waiting for that slot.
   Web timeouts and body limits are configurable; exceeding them returns a tool error for the agent to handle.
+  The fetch request timeout covers retrieval and redirects only; indexing a page, including embedding, is bounded by
+  `tools.fetched.embedding.request_timeout_secs` per batch.
 
 ## Development
 

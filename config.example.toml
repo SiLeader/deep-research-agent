@@ -12,10 +12,12 @@ model = "default"
 max_llm_calls = 30
 # Research/review cycles per research step before the step fails.
 max_research_loops = 10
-# LLM requests per research request across all agents, Explorer, and retries.
+# LLM requests per research or planning request across all agents, Explorer, and retries.
 max_total_llm_calls = 2000
-# Deadline for a whole research request, including synthesis.
+# Deadline for a whole research request, including synthesis. Also bounds planning.
 research_timeout_secs = 3600
+# Planning and research requests running at once; extra requests get HTTP 503.
+max_concurrent_requests = 4
 # Tool output kept in each agent's conversation; older outputs are elided first.
 max_tool_context_chars = 200000
 # Optional role-specific overrides. Omitted models use agent.model;

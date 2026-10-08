@@ -138,10 +138,11 @@ async fn configured_search_tools_support_all_four_retrieval_modes() {
             };
             let config: config::Config = toml::from_str(&format!("models = []\nproviders = []\n[tools.web_search.searxng]\nendpoint = '{search_endpoint}'\n{embedding_config}{reranker_config}")).unwrap();
             let retrieval = RetrievalModels::new(&config.tools.fetched, &services).unwrap();
-            let tools = build_search_tools(config.tools.clone(), retrieval.clone())
+            let factory = SearchToolsFactory::new(config.tools, retrieval)
                 .await
                 .unwrap();
-            let isolated = build_search_tools(config.tools, retrieval).await.unwrap();
+            let tools = factory.build().await.unwrap();
+            let isolated = factory.build().await.unwrap();
             let search = tools
                 .call("search_sources", json!({"query": "apple"}))
                 .await

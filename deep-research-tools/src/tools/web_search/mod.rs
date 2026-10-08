@@ -30,6 +30,14 @@ impl WebSearchTool {
         let searxng_client = SearxngClient::new(origin, limits)?;
         Ok(Self { searxng_client, db })
     }
+
+    /// Reuse this tool's HTTP client and connection pool with another database.
+    pub fn with_db(&self, db: Arc<FetchedDb>) -> Self {
+        Self {
+            searxng_client: self.searxng_client.clone(),
+            db,
+        }
+    }
 }
 
 #[derive(Debug, JsonSchema, Serialize, Deserialize)]

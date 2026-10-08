@@ -18,8 +18,10 @@ pub(super) async fn research_create(
 ) -> actix_web::Result<actix_web::HttpResponse> {
     let plan = json.into_inner().plan;
     plan.validate().map_err(actix_web::error::ErrorBadRequest)?;
-    let stream = orchestrator.get_ref().clone().run_deep_research(plan);
-    Ok(research_response(stream))
+    match orchestrator.get_ref().clone().run_deep_research(plan) {
+        Ok(stream) => Ok(research_response(stream)),
+        Err(_busy) => Ok(super::busy_response()),
+    }
 }
 
 fn research_response(
@@ -80,6 +82,12 @@ mod tests {
     }
 
     fn orchestrator() -> DeepResearchOrchestrator {
+        limited_orchestrator(Default::default())
+    }
+
+    fn limited_orchestrator(
+        limits: deep_research_orchestrator::ResearchLimits,
+    ) -> DeepResearchOrchestrator {
         let agent = ReActAgent::new(
             OneshotRunner::new(
                 "test-model".into(),
@@ -93,6 +101,8 @@ mod tests {
         )
         .unwrap();
         DeepResearchOrchestrator::new(agent.clone(), agent.clone(), agent.clone(), agent)
+            .with_limits(limits)
+            .unwrap()
     }
 
     fn decode_events(body: &[u8]) -> Vec<Value> {
@@ -246,5 +256,47 @@ mod tests {
             .to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[actix_web::test]
+    async fn requests_beyond_the_concurrency_limit_are_rejected() {
+        let orchestrator = limited_orchestrator(deep_research_orchestrator::ResearchLimits {
+            max_concurrent_requests: Some(1),
+            ..Default::default()
+        });
+        let plan: DeepResearchPlan = serde_json::from_value(json!({
+            "research_plans": [{"goal": "goal", "scope": "scope", "questions": ["question"]}],
+            "report_plan": {"goal": "report", "sections": [{"heading": "Results", "focus": "Answer"}]}
+        }))
+        .unwrap();
+        // Hold the only slot with a stream that is never polled.
+        let _running = orchestrator
+            .clone()
+            .run_deep_research(plan.clone())
+            .unwrap();
+        let app = test::init_service(
+            App::new()
+                .app_data(Data::new(orchestrator))
+                .configure(crate::handlers::configure),
+        )
+        .await;
+        for request in [
+            test::TestRequest::post()
+                .uri("/api/v1/deep/research")
+                .set_json(json!({ "plan": plan })),
+            test::TestRequest::post()
+                .uri("/api/v1/deep/research/plan")
+                .set_json(json!({"prompt": "plan"})),
+        ] {
+            let response = test::call_service(&app, request.to_request()).await;
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert!(response.headers().contains_key("Retry-After"));
+        }
+        let request = test::TestRequest::post()
+            .uri("/api/v1/deep/research/plan")
+            .set_json(json!({"prompt": " "}))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

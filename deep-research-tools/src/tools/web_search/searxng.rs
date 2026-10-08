@@ -1,7 +1,7 @@
 use crate::tools::{WebRequestLimits, http::bounded_body};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 #[derive(Clone)]
 pub(super) struct SearxngClient {
@@ -22,8 +22,42 @@ pub(super) struct SearxngSearchResult {
     #[serde(default)]
     pub content: Option<String>,
     pub score: f32,
-    #[serde(default, rename = "publishedDate", alias = "published_date")]
+    #[serde(
+        default,
+        rename = "publishedDate",
+        alias = "published_date",
+        deserialize_with = "lenient_date"
+    )]
     pub published_date: Option<DateTime<Utc>>,
+}
+
+/// SearXNG serializes engine-provided datetimes with `isoformat()`, which omits
+/// the offset for naive values. Treat those as UTC and drop unparsable dates
+/// instead of failing the whole search.
+fn lenient_date<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<DateTime<Utc>>, D::Error> {
+    let Some(serde_json::Value::String(text)) =
+        Option::<serde_json::Value>::deserialize(deserializer)?
+    else {
+        return Ok(None);
+    };
+    let text = text.trim();
+    Ok(DateTime::parse_from_rfc3339(text)
+        .map(|date| date.with_timezone(&Utc))
+        .ok()
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f")
+                .or_else(|_| NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f"))
+                .ok()
+                .map(|date| date.and_utc())
+        })
+        .or_else(|| {
+            NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                .ok()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+                .map(|date| date.and_utc())
+        }))
 }
 
 impl SearxngClient {
@@ -88,6 +122,9 @@ mod tests {
             json!({"publishedDate": null}),
             json!({"publishedDate": "2026-10-06T00:00:00Z"}),
             json!({"published_date": "2026-10-06T00:00:00Z"}),
+            json!({"publishedDate": "2026-10-06T00:00:00"}),
+            json!({"publishedDate": "2026-10-06T09:00:00+09:00"}),
+            json!({"publishedDate": "2026-10-06"}),
         ] {
             let mut result =
                 json!({"url": "https://example.com", "title": "Example", "score": 1.0});
@@ -103,6 +140,21 @@ mod tests {
                 output.pages[0].published_date.is_some(),
                 date.as_object().unwrap().values().any(|v| v.is_string())
             );
+            assert_eq!(
+                output.pages[0].published_date.map(|date| date.to_rfc3339()),
+                date.as_object()
+                    .unwrap()
+                    .values()
+                    .any(|v| v.is_string())
+                    .then(|| "2026-10-06T00:00:00+00:00".to_string())
+            );
+        }
+        for invalid in [json!("not a date"), json!(""), json!(1728172800)] {
+            let response: SearxngSearchResponse = serde_json::from_value(json!({"results": [
+                {"url": "https://example.com", "title": "Example", "score": 1.0, "publishedDate": invalid}
+            ]}))
+            .unwrap();
+            assert!(response.results[0].published_date.is_none());
         }
     }
 }

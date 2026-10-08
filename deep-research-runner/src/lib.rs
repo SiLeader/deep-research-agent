@@ -8,6 +8,8 @@ use std::time::Duration;
 
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Upper bound for a server-requested `Retry-After` delay.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 
 tokio::task_local! {
     static CALL_BUDGET: Arc<CallBudget>;
@@ -43,6 +45,15 @@ impl CallBudget {
 /// Spawned tasks do not inherit the budget; wrap their futures as well.
 pub async fn with_call_budget<F: Future>(budget: Arc<CallBudget>, future: F) -> F::Output {
     CALL_BUDGET.scope(budget, future).await
+}
+
+/// Honor the server's requested delay; retrying earlier would only repeat the
+/// throttled response and spend the call budget.
+fn retry_delay(retry_after: Option<Duration>, backoff: Duration) -> Duration {
+    match retry_after {
+        Some(delay) => delay.min(MAX_RETRY_AFTER),
+        None => backoff,
+    }
 }
 
 fn consume_budget() -> anyhow::Result<()> {
@@ -166,7 +177,7 @@ impl OneshotRunner {
                 return Err(error.into_anyhow(&self.model));
             };
             attempt += 1;
-            let delay = retry_after.unwrap_or(backoff).min(MAX_BACKOFF);
+            let delay = retry_delay(retry_after, backoff);
             tracing::warn!(
                 model = %self.model,
                 attempt,

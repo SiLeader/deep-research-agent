@@ -158,3 +158,17 @@ async fn call_budget_is_shared_and_enforced_before_requests() {
     .await;
     server.await.unwrap();
 }
+
+#[test]
+fn retry_after_is_honored_beyond_the_backoff_cap() {
+    let backoff = Duration::from_secs(4);
+    assert_eq!(retry_delay(None, backoff), backoff);
+    assert_eq!(
+        retry_delay(Some(Duration::from_secs(60)), backoff),
+        Duration::from_secs(60)
+    );
+    assert_eq!(
+        retry_delay(Some(Duration::from_secs(3_600)), backoff),
+        MAX_RETRY_AFTER
+    );
+}

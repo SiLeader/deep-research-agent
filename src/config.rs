@@ -31,6 +31,7 @@ pub(crate) struct AgentConfig {
     pub max_tool_context_chars: usize,
     pub max_total_llm_calls: usize,
     pub research_timeout_secs: u64,
+    pub max_concurrent_requests: usize,
     pub planner: AgentRoleConfig,
     pub research: AgentRoleConfig,
     pub gap_judger: AgentRoleConfig,
@@ -273,6 +274,7 @@ impl Default for AgentConfig {
             max_tool_context_chars: 200_000,
             max_total_llm_calls: 2_000,
             research_timeout_secs: 3_600,
+            max_concurrent_requests: 4,
             planner: Default::default(),
             research: Default::default(),
             gap_judger: Default::default(),
@@ -306,9 +308,10 @@ impl AgentConfig {
             max_research_loops: self.max_research_loops,
             timeout: Some(std::time::Duration::from_secs(self.research_timeout_secs)),
             max_total_llm_calls: Some(self.max_total_llm_calls),
+            max_concurrent_requests: Some(self.max_concurrent_requests),
         };
         limits.validate().context(
-            "agent.max_research_loops, agent.research_timeout_secs and agent.max_total_llm_calls must be positive",
+            "agent.max_research_loops, agent.research_timeout_secs, agent.max_total_llm_calls and agent.max_concurrent_requests must be positive",
         )?;
         let planner_model = self
             .planner
@@ -380,8 +383,10 @@ impl AgentConfig {
 
 impl Config {
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
-        let config_str = std::fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&config_str)?;
+        let config_str = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read configuration file: {path}"))?;
+        let config: Config = toml::from_str(&config_str)
+            .with_context(|| format!("Failed to parse configuration file: {path}"))?;
         Ok(config)
     }
 }
@@ -653,6 +658,7 @@ mod tests {
         assert_eq!(agent.max_tool_context_chars, 200_000);
         assert_eq!(agent.limits.max_research_loops, 10);
         assert_eq!(agent.limits.max_total_llm_calls, Some(2_000));
+        assert_eq!(agent.limits.max_concurrent_requests, Some(4));
         assert_eq!(
             agent.limits.timeout,
             Some(std::time::Duration::from_secs(3_600))
@@ -662,10 +668,17 @@ mod tests {
             "max_tool_context_chars = 0",
             "max_total_llm_calls = 0",
             "research_timeout_secs = 0",
+            "max_concurrent_requests = 0",
         ] {
             let agent: AgentConfig = toml::from_str(&format!("model = 'm'\n{text}")).unwrap();
             assert!(agent.into_must().is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn configuration_errors_name_the_file() {
+        let error = Config::from_file("/nonexistent/config.toml").unwrap_err();
+        assert!(format!("{error:#}").contains("/nonexistent/config.toml"));
     }
 
     #[test]

@@ -70,6 +70,14 @@ pub(crate) mod tests {
     pub(crate) async fn server(
         response: String,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<u8>>) {
+        delayed_server(response, Duration::ZERO).await
+    }
+
+    /// Like [`server`], but waits `delay` after reading the request.
+    pub(crate) async fn delayed_server(
+        response: String,
+        delay: Duration,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<u8>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
@@ -95,6 +103,7 @@ pub(crate) mod tests {
                     }
                 }
             }
+            tokio::time::sleep(delay).await;
             socket.write_all(response.as_bytes()).await.unwrap();
             request
         });

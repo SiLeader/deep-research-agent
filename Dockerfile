@@ -6,7 +6,7 @@ WORKDIR /work
 
 COPY . .
 
-RUN cargo build --release && \
+RUN cargo build --release --locked && \
     cp target/release/deep-research-agent /deep-research-agent
 
 FROM scratch

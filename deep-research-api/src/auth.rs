@@ -18,7 +18,7 @@ pub(crate) async fn require_api_key(
             .headers()
             .get(actix_web::http::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "));
+            .and_then(bearer_token);
         if !provided
             .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()))
         {
@@ -29,6 +29,14 @@ pub(crate) async fn require_api_key(
         }
     }
     Ok(next.call(req).await?.map_into_left_body())
+}
+
+/// The authentication scheme name is case-insensitive (RFC 9110).
+fn bearer_token(value: &str) -> Option<&str> {
+    let (scheme, token) = value.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim_start_matches(' '))
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -55,6 +63,10 @@ mod tests {
                 ("/api/v1/test", None, key.is_none()),
                 ("/api/v1/test", Some("Bearer wrong"), key.is_none()),
                 ("/api/v1/test", Some("Bearer secret"), true),
+                ("/api/v1/test", Some("bearer secret"), true),
+                ("/api/v1/test", Some("BEARER  secret"), true),
+                ("/api/v1/test", Some("Basic secret"), key.is_none()),
+                ("/api/v1/test", Some("Bearersecret"), key.is_none()),
                 ("/version", None, true),
             ] {
                 let mut request = test::TestRequest::get().uri(path);

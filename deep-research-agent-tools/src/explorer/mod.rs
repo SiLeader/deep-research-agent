@@ -50,6 +50,19 @@ struct ExplorerReference {
     content: String,
 }
 
+impl ExplorerOutput {
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.answer.trim().is_empty(), "answer must not be blank");
+        for reference in &self.references {
+            anyhow::ensure!(
+                !reference.source.trim().is_empty() && !reference.content.trim().is_empty(),
+                "references require a source and supporting content"
+            );
+        }
+        Ok(())
+    }
+}
+
 impl ExplorerTool {
     pub fn with_max_llm_calls(mut self, max_llm_calls: usize) -> anyhow::Result<Self> {
         self.agent = self.agent.with_max_llm_calls(max_llm_calls)?;
@@ -152,7 +165,9 @@ impl DeepResearchTool for ExplorerTool {
             }
             None => self.agent.clone(),
         };
-        agent.get_output(args.query).await
+        agent
+            .get_output_validated(args.query, ExplorerOutput::validate)
+            .await
     }
 }
 
@@ -173,6 +188,27 @@ mod tests {
     impl AgentConcurrencyArbiter for FailingArbiter {
         async fn acquire(&self, _: &str) -> anyhow::Result<ArbiterTabletGuard> {
             anyhow::bail!("fixture stops before calling the LLM")
+        }
+    }
+
+    #[test]
+    fn rejects_blank_answers_and_references() {
+        let output = |answer: &str, source: &str, content: &str| ExplorerOutput {
+            answer: answer.into(),
+            references: vec![ExplorerReference {
+                source: source.into(),
+                content: content.into(),
+            }],
+        };
+        output("answer", "https://example.com", "evidence")
+            .validate()
+            .unwrap();
+        for invalid in [
+            output(" ", "https://example.com", "evidence"),
+            output("answer", "", "evidence"),
+            output("answer", "https://example.com", "\n"),
+        ] {
+            assert!(invalid.validate().is_err());
         }
     }
 

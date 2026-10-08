@@ -48,7 +48,7 @@ impl FinalReport {
             .collect();
         for (section, planned) in self.sections.iter().zip(&plan.sections) {
             anyhow::ensure!(
-                section.heading == planned.heading,
+                section.heading.trim() == planned.heading.trim(),
                 "report sections must copy headings in plan order"
             );
             anyhow::ensure!(
@@ -185,6 +185,8 @@ mod tests {
             .push("https://invented.example".into());
         assert!(invalid.validate(&plan(), &outputs()).is_err());
         let mut invalid = report();
+        invalid.sections[0].heading = " Results\n".into();
+        invalid.validate(&plan(), &outputs()).unwrap();
         invalid.sections[0].heading = "Wrong section".into();
         assert!(invalid.validate(&plan(), &outputs()).is_err());
         let mut invalid = report();

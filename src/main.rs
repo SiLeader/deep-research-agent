@@ -45,7 +45,7 @@ async fn main() {
     let config = match config::Config::from_file(&args.config) {
         Ok(cfg) => cfg,
         Err(e) => {
-            tracing::error!("Failed to load configuration: {}", e);
+            tracing::error!("Failed to load configuration: {:#}", e);
             std::process::exit(1);
         }
     };
@@ -53,7 +53,7 @@ async fn main() {
     let agent_config = match config.agent.into_must() {
         Ok(cfg) => cfg,
         Err(e) => {
-            tracing::error!("Failed to resolve agent configuration: {}", e);
+            tracing::error!("Failed to resolve agent configuration: {:#}", e);
             std::process::exit(1);
         }
     };
@@ -226,26 +226,53 @@ impl RetrievalModels {
     }
 }
 
-async fn build_search_tools(
-    tools: config::ToolsConfig,
+/// Builds the Explorer's search tools. HTTP clients are created once and
+/// shared; each build gets a fresh, isolated evidence database.
+#[derive(Clone)]
+struct SearchToolsFactory {
+    web_search: WebSearchTool,
+    web_fetch: WebFetchTool,
+    search: deep_research_tools::tools::search_fetched::FetchedConfig,
     retrieval: RetrievalModels,
-) -> anyhow::Result<DeepResearchTools> {
-    tools.fetched.validate()?;
-    let search = tools.fetched.search();
-    let db =
-        Arc::new(FetchedDb::new(search.chunk_size, retrieval.embedder, retrieval.reranker).await?);
-    let mut registry = DeepResearchTools::default();
-    registry.add(
-        WebSearchTool::new_for_searxng_with_limits(
+}
+
+impl SearchToolsFactory {
+    async fn new(tools: config::ToolsConfig, retrieval: RetrievalModels) -> anyhow::Result<Self> {
+        tools.fetched.validate()?;
+        let search = tools.fetched.search();
+        // Validates the remaining settings; tools rebind to a fresh database per build.
+        let db = Arc::new(FetchedDb::new(search.chunk_size, None, None).await?);
+        let web_search = WebSearchTool::new_for_searxng_with_limits(
             &tools.web_search.searxng.endpoint,
             tools.web_search.searxng.limits(),
             db.clone(),
         )
-        .context("Invalid tools.web_search.searxng.endpoint")?,
-    );
-    registry.add(WebFetchTool::new(tools.web_fetch, db.clone())?);
-    registry.add(SearchFetchedTool::new(db, search)?);
-    Ok(registry)
+        .context("Invalid tools.web_search.searxng.endpoint")?;
+        let web_fetch = WebFetchTool::new(tools.web_fetch, db.clone())?;
+        SearchFetchedTool::new(db, search.clone())?;
+        Ok(Self {
+            web_search,
+            web_fetch,
+            search,
+            retrieval,
+        })
+    }
+
+    async fn build(&self) -> anyhow::Result<DeepResearchTools> {
+        let db = Arc::new(
+            FetchedDb::new(
+                self.search.chunk_size,
+                self.retrieval.embedder.clone(),
+                self.retrieval.reranker.clone(),
+            )
+            .await?,
+        );
+        let mut registry = DeepResearchTools::default();
+        registry.add(self.web_search.with_db(db.clone()));
+        registry.add(self.web_fetch.with_db(db.clone()));
+        registry.add(SearchFetchedTool::new(db, self.search.clone())?);
+        Ok(registry)
+    }
 }
 
 async fn run_server(
@@ -270,12 +297,16 @@ async fn run_server(
     let explorer_runner = runner(&agent.explorer.model)?;
     let synthesizer_runner = runner(&agent.synthesizer.model)?;
 
-    // Validate and construct once at startup to fail early on invalid tool settings.
-    // This registry is dropped; each Explorer call receives its own fresh database.
-    drop(build_search_tools(tools.clone(), retrieval.clone()).await?);
+    // Validate at startup to fail early on invalid tool settings.
+    // Each Explorer call receives its own fresh database.
+    let search_tools = SearchToolsFactory::new(tools, retrieval).await?;
+    drop(search_tools.build().await?);
     let explorer = ExplorerTool::new_with_tools_factory(
         explorer_runner,
-        move || build_search_tools(tools.clone(), retrieval.clone()),
+        move || {
+            let search_tools = search_tools.clone();
+            async move { search_tools.build().await }
+        },
         agent.explorer.system_prompt,
     )?
     .with_max_llm_calls(agent.max_llm_calls)?

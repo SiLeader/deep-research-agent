@@ -60,12 +60,13 @@ curl --fail-with-body http://127.0.0.1:8080/version
 
 | 設定                                | 内容                                                                                  |
 |-------------------------------------|---------------------------------------------------------------------------------------|
-| `server.host`, `server.port`        | 待ち受け先。既定値は `127.0.0.1:8080`。                                               |
+| `server.host`, `server.port`        | 待ち受け先。既定値は `127.0.0.1:8080`。コンテナ外から接続するには `host = "0.0.0.0"` を指定。 |
 | `server.api_key_env`                | トークンを格納する環境変数名。指定すると `/api/` に `Authorization: Bearer <token>` が必要。省略可能。 |
 | `agent.max_llm_calls`               | Explorerを含む各エージェント実行のLLM呼び出し上限。既定値は `30`。正の値が必要。      |
 | `agent.max_research_loops`          | 調査項目ごとの調査・レビューのサイクル上限。既定値は `10`。                           |
-| `agent.max_total_llm_calls`         | 1件の調査リクエスト全体(Explorer・再試行を含む)のLLM呼び出し上限。既定値は `2000`。 |
-| `agent.research_timeout_secs`       | 統合を含む調査リクエスト全体の期限。既定値は `3600` 秒。                              |
+| `agent.max_total_llm_calls`         | 1件の調査・計画リクエスト全体(Explorer・再試行を含む)のLLM呼び出し上限。既定値は `2000`。 |
+| `agent.research_timeout_secs`       | 統合を含む調査リクエスト全体、および各計画リクエストの期限。既定値は `3600` 秒。     |
+| `agent.max_concurrent_requests`     | 同時に実行する計画・調査リクエスト数の上限。超過時は HTTP `503`。既定値は `4`。      |
 | `agent.max_tool_context_chars`      | 各エージェントの会話に保持するツール出力の文字数上限。古い出力から省略。既定値は `200000`。 |
 | `agent.model`                       | 全ロールの既定モデル ID。                                                             |
 | `agent.<role>.model`                | `planner`、`research`、`gap_judger`、`explorer`、`synthesizer` のモデル ID を上書き。 |
@@ -177,7 +178,10 @@ curl --fail-with-body http://127.0.0.1:8080/api/v1/deep/research/plan \
 ```
 
 計画を修正する場合は、同じエンドポイントに `prompt` と、省略可能な `previous_plan` を送信します。`previous_plan`
-には計画オブジェクト全体を指定します。レスポンスには修正後の計画全体が返ります。無効な `previous_plan` は HTTP `400`、計画作成に失敗した場合は HTTP `500` を返し、ログに記録します。
+には計画オブジェクト全体を指定します。レスポンスには修正後の計画全体が返ります。空の `prompt`、20,000文字を超える `prompt`、無効な `previous_plan` は HTTP `400`、計画作成に失敗した場合は HTTP `500` を返し、ログに記録します。
+
+計画の調査項目は最大20件、項目ごとの質問は最大20件、レポートの章は最大30件、各文字列は最大4,000文字です。超過した計画は HTTP `400` で拒否します。
+`agent.max_concurrent_requests` 件のリクエストが実行中の場合、計画・調査APIは `Retry-After` 付きの HTTP `503` を返します。
 
 `server.api_key_env` を設定した場合は、`/api/` へのリクエストに `-H "Authorization: Bearer $API_KEY"` を追加します。認証がないリクエストは
 HTTP `401` になります。未設定の場合は起動時に警告をログに出します。その状態で公開しないでください。
@@ -222,11 +226,14 @@ data: {"model":"default","step":0,"phase":"ResearchStepCompleted","data":{"findi
   文字コードはBOM、Content-Typeのcharset、HTMLの `<meta>` のcharsetの順で判定します。
 - fetchは公開HTTP (S)
   URLだけを許可し、DNS解決後のIPとリダイレクト先も検証します。内部・ループバック・リンクローカル・予約済みIPは拒否し、環境変数のプロキシは使いません。設定したLLMとSearXNGの接続先には内部URLを使用できます。
-- SearXNG結果の `url`、`title`、`score` は必須ですが、公開日時の `publishedDate` は省略・nullを許容します。ツール出力の
+- SearXNG結果の `url`、`title`、`score` は必須ですが、公開日時の `publishedDate` は省略・nullを許容します。
+  タイムゾーンのない日時はUTCとして扱い、解釈できない日時はnullにします。ツール出力の
   `published_date` はUTC日時またはnullになります。
 - 各エージェント実行は `agent.max_llm_calls`、調査項目は `agent.max_research_loops`、調査リクエスト全体は
   `agent.max_total_llm_calls` と `agent.research_timeout_secs` で制限します。Web取得の時間・本文サイズ超過はツールエラーとしてエージェントに返します。
   チャットリクエストは `models[].request_timeout_secs` でタイムアウトし、同時実行枠を解放します。この期限に枠の取得待ちは含みません。
+  fetchのタイムアウトは取得とリダイレクトだけに適用されます。ページの索引作成(埋め込みを含む)はバッチごとに
+  `tools.fetched.embedding.request_timeout_secs` で制限します。
 
 ## 開発
 
