@@ -7,8 +7,14 @@ pub(crate) fn configure(config: &mut actix_web::web::ServiceConfig) {
         // Accommodate every valid plan, including JSON-escaped text.
         .app_data(actix_web::web::JsonConfig::default().limit(16 * 1024 * 1024))
         .service(version_get::version_get)
-        .service(plan_create::plan_create)
-        .service(research_create::research_create);
+        .service(
+            // Authenticate the scope the router matches, not the raw request
+            // path, so percent-encoded paths cannot bypass the check.
+            actix_web::web::scope("/api")
+                .wrap(actix_web::middleware::from_fn(crate::auth::require_api_key))
+                .service(plan_create::plan_create)
+                .service(research_create::research_create),
+        );
 }
 
 /// The orchestrator's concurrent request limit is reached.

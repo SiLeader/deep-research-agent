@@ -1,7 +1,6 @@
 mod auth;
 mod handlers;
 
-use actix_web::middleware::from_fn;
 use actix_web::web::Data;
 use actix_web::{App, HttpServer};
 use deep_research_orchestrator::DeepResearchOrchestrator;
@@ -30,7 +29,6 @@ impl DeepResearchServer {
     pub async fn run(self, addr: &str) -> anyhow::Result<()> {
         HttpServer::new(move || {
             App::new()
-                .wrap(from_fn(auth::require_api_key))
                 .wrap(TracingLogger::default())
                 .app_data(self.orchestrator.clone())
                 .app_data(self.api_key.clone())

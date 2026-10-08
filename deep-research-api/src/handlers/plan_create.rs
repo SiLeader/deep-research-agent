@@ -10,7 +10,7 @@ pub(super) struct PlanCreateRequest {
     previous_plan: Option<DeepResearchPlan>,
 }
 
-#[post("/api/v1/deep/research/plan")]
+#[post("/v1/deep/research/plan")]
 pub(super) async fn plan_create(
     orchestrator: Data<DeepResearchOrchestrator>,
     json: Json<PlanCreateRequest>,

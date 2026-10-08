@@ -11,7 +11,7 @@ pub(super) struct ResearchCreateRequest {
     plan: DeepResearchPlan,
 }
 
-#[post("/api/v1/deep/research")]
+#[post("/v1/deep/research")]
 pub(super) async fn research_create(
     orchestrator: Data<DeepResearchOrchestrator>,
     json: Json<ResearchCreateRequest>,
@@ -335,6 +335,36 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         }
+    }
+
+    #[actix_web::test]
+    async fn configured_api_routes_require_the_token_for_encoded_paths() {
+        let app = test::init_service(
+            App::new()
+                .app_data(Data::new(orchestrator()))
+                .app_data(Data::new(crate::auth::ApiKey(Some("secret".into()))))
+                .configure(crate::handlers::configure),
+        )
+        .await;
+        for path in [
+            "/api/v1/deep/research",
+            "/%61pi/v1/deep/research",
+            "/api/v1/deep/research/plan",
+            "/%61%70%69/v1/deep/research/plan",
+        ] {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(path)
+                    .set_json(json!({"prompt": "plan"}))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
+        let response =
+            test::call_service(&app, test::TestRequest::get().uri("/version").to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[actix_web::test]

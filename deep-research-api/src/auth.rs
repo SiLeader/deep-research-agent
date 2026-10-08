@@ -6,14 +6,14 @@ use actix_web::web::Data;
 /// Bearer token required for `/api/` routes when configured.
 pub(crate) struct ApiKey(pub(crate) Option<String>);
 
+/// Wrap the scope to protect rather than inspecting `req.path()`: the raw path
+/// may be percent-encoded (e.g. `/%61pi/`) while the router decodes it.
 pub(crate) async fn require_api_key(
     req: ServiceRequest,
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<EitherBody<impl MessageBody>>, actix_web::Error> {
     let expected = req.app_data::<Data<ApiKey>>().and_then(|key| key.0.clone());
-    if let Some(expected) = expected
-        && req.path().starts_with("/api/")
-    {
+    if let Some(expected) = expected {
         let provided = req
             .headers()
             .get(actix_web::http::header::AUTHORIZATION)
@@ -53,14 +53,20 @@ mod tests {
         for key in [None, Some("secret".to_string())] {
             let app = test::init_service(
                 App::new()
-                    .wrap(from_fn(require_api_key))
                     .app_data(Data::new(ApiKey(key.clone())))
-                    .route("/api/v1/test", web::get().to(actix_web::HttpResponse::Ok))
+                    .service(
+                        web::scope("/api")
+                            .wrap(from_fn(require_api_key))
+                            .route("/v1/test", web::get().to(actix_web::HttpResponse::Ok)),
+                    )
                     .route("/version", web::get().to(actix_web::HttpResponse::Ok)),
             )
             .await;
             for (path, header, authorized) in [
                 ("/api/v1/test", None, key.is_none()),
+                ("/%61pi/v1/test", None, key.is_none()),
+                ("/%61%70%69/v1/test", None, key.is_none()),
+                ("/%61pi/v1/test", Some("Bearer secret"), true),
                 ("/api/v1/test", Some("Bearer wrong"), key.is_none()),
                 ("/api/v1/test", Some("Bearer secret"), true),
                 ("/api/v1/test", Some("bearer secret"), true),
