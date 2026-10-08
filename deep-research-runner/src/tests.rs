@@ -172,3 +172,28 @@ fn retry_after_is_honored_beyond_the_backoff_cap() {
         MAX_RETRY_AFTER
     );
 }
+
+#[tokio::test]
+async fn provider_error_bodies_are_not_returned_to_callers() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            let body = r#"{"error":{"message":"private-provider-detail"}}"#;
+            socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let runner = OneshotRunner::new(
+            "model".into(), fixture_client(addr),
+            Arc::new(SemaphoreConcurrencyArbiter::new(HashMap::from([("model".into(), 1)]))),
+            ChatOptions::default(),
+        );
+        let error = runner.run(vec![ChatMessage::user("test")], vec![]).await.unwrap_err();
+        let returned = format!("{error:#}");
+        assert!(returned.contains("model"));
+        assert!(returned.contains("HTTP 400"));
+        assert!(!returned.contains("private-provider-detail"));
+        server.await.unwrap();
+    }).await.unwrap();
+}

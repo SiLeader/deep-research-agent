@@ -26,6 +26,16 @@ impl ReActAgent {
                 let event = self.run_llm_single(&mut messages).await;
                 yield event.clone();
 
+                if matches!(event, AgentEvent::Message(_)) && !self.stop_tool_names.is_empty() {
+                    let mut names: Vec<_> = self.stop_tool_names.iter().map(String::as_str).collect();
+                    names.sort_unstable();
+                    messages.push(genai::chat::ChatMessage::user(format!(
+                        "A text response does not complete this task. Continue using tools, \
+                         then submit the result using one of these tools: {}.",
+                        names.join(", ")
+                    )));
+                    continue;
+                }
                 let Some(tool_calls) = event.unwrap_tool_calls() else {
                     return;
                 };

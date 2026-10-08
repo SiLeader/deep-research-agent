@@ -52,6 +52,7 @@ struct ExplorerReference {
 
 impl ExplorerOutput {
     fn validate(&self) -> anyhow::Result<()> {
+        deep_research_tools::validate_stage_output_size(self)?;
         anyhow::ensure!(!self.answer.trim().is_empty(), "answer must not be blank");
         for reference in &self.references {
             anyhow::ensure!(
@@ -210,6 +211,15 @@ mod tests {
         ] {
             assert!(invalid.validate().is_err());
         }
+        let mut oversized = output("answer", "https://example.com", "evidence");
+        oversized.references[0].content = "x".repeat(deep_research_tools::MAX_STAGE_OUTPUT_CHARS);
+        assert!(
+            oversized
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("serialized JSON")
+        );
     }
 
     #[tokio::test]

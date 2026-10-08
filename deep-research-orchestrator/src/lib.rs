@@ -164,10 +164,10 @@ impl DeepResearchOrchestrator {
     ) -> tokio::task::JoinHandle<()> {
         let budget = self.limits.max_total_llm_calls.map(CallBudget::new);
         let timeout = self.limits.timeout;
-        let model = self.researcher.model().to_string();
+        let mut model = self.researcher.model().to_string();
         tokio::spawn(async move {
             let _permit = permit;
-            let run = self.run(tx.clone(), plan, budget);
+            let run = self.run(tx.clone(), plan, budget, &mut model);
             let Some(timeout) = timeout else {
                 return run.await;
             };
@@ -193,6 +193,7 @@ impl DeepResearchOrchestrator {
         tx: tokio::sync::mpsc::Sender<ResearchEvent>,
         plan: DeepResearchPlan,
         budget: Option<std::sync::Arc<CallBudget>>,
+        active_model: &mut String,
     ) {
         if let Err(e) = plan.validate() {
             let _ = tx
@@ -260,6 +261,7 @@ impl DeepResearchOrchestrator {
         }
         results.sort_by_key(|(index, _)| *index);
 
+        *active_model = self.synthesizer_agent.model().to_string();
         let synthesis = self.synthesize(
             plan.report_plan,
             results.into_iter().map(|(_, output)| output).collect(),

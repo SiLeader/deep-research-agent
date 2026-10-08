@@ -100,6 +100,10 @@
 
 LLMの出力の解析・検証に失敗した場合、エラー内容を `submit` のツール応答としてモデルに返し、`agent.max_llm_calls` の範囲で再提出させます。上限内に有効な出力が得られなければ、計画APIでは HTTP 500、調査中は `Failed` を返します。外部から渡された無効な計画は、調査APIと計画API(`previous_plan`)で HTTP 400 になります。
 
+Explorer、調査結果、gap judge、最終レポートは、それぞれJSONにシリアライズした全体で最大200,000文字です。キーやJSONのエスケープも文字数に含め、超過時は検証エラーとしてモデルに短縮を求めます。この上限は `agent.max_tool_context_chars` とは別です。APIのJSON受信上限は、有効な計画の最大サイズを扱える16 MiBです。受信上限超過は HTTP 413 になります。
+
+提出用ツールを持つエージェントが本文だけ返した場合は、呼び出し上限内でツールの使用と提出を再度求めます。`submit` は他のツールと同じターンで呼び出せません。混在した場合は他のツールを実行し、その結果を確認してから別ターンで再提出するよう求めます。
+
 SSE の `Researching`、`GapJudging`、`ResearchStepCompleted` には、`research_plans` 内の0始まりの位置を示す `step` が付きます。
 
 この変更は従来の JSON と互換性がありません。`findings[].question` は削除され、gap の `question` は `question_number` に置き換わりました。保存済みの `goal` だけの計画は `scope`、`questions`、`report_plan.sections` を追加するか、計画APIで再生成してください。SSE利用側は `research_step_result` とステップ直下の `references` を `findings` と回答ごとの `references` に変更し、空だった `Synthesized.data` からレポート本文を読むよう更新してください。独自のシステムプロンプトを設定している場合も、新しい必須フィールドに合わせてください。

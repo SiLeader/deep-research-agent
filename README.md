@@ -213,6 +213,12 @@ data: {"model":"default","step":0,"phase":"ResearchStepCompleted","data":{"findi
 
 If an agent submits output that fails validation (wrong number of findings, an unknown cited source, and so on), the
 error is returned to the model as the tool response and it may resubmit within `agent.max_llm_calls`.
+Explorer, research, gap review, and final-report outputs are each limited to 200,000 serialized JSON characters
+(including keys and escapes). Oversized submissions must be shortened and resubmitted.
+Text-only replies are retried within the same call limit when a submission tool is required.
+Call `submit` in a separate turn after reviewing other tool results; mixed batches execute the other tools and reject the submission.
+API JSON bodies are limited to 16 MiB to accommodate the largest valid escaped plans; larger bodies receive HTTP `413`.
+Chat and embedding provider error details are logged on the server, not returned in SSE or tool responses.
 
 The server sends `: keep-alive` comments every 15 seconds while waiting for events. Successful completion emits
 `Synthesized`; a research or synthesis failure emits `Failed` with `data.error` and closes the stream. Clients must

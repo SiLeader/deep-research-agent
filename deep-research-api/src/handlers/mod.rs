@@ -4,6 +4,8 @@ mod version_get;
 
 pub(crate) fn configure(config: &mut actix_web::web::ServiceConfig) {
     config
+        // Accommodate every valid plan, including JSON-escaped text.
+        .app_data(actix_web::web::JsonConfig::default().limit(16 * 1024 * 1024))
         .service(version_get::version_get)
         .service(plan_create::plan_create)
         .service(research_create::research_create);

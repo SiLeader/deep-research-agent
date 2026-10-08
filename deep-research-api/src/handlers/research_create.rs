@@ -259,6 +259,85 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn maximum_valid_escaped_plans_fit_both_api_endpoints() {
+        use deep_research_orchestrator::plan::{
+            MAX_PLAN_TEXT_CHARS, MAX_QUESTIONS_PER_STEP, MAX_REPORT_SECTIONS, MAX_RESEARCH_STEPS,
+        };
+        let text = "\u{1}".repeat(MAX_PLAN_TEXT_CHARS);
+        let distinct = |index| format!("{index:04}{}", "\u{1}".repeat(MAX_PLAN_TEXT_CHARS - 4));
+        let plan = json!({
+            "research_plans": (0..MAX_RESEARCH_STEPS).map(|_| json!({
+                "goal": text, "scope": text,
+                "questions": (0..MAX_QUESTIONS_PER_STEP).map(distinct).collect::<Vec<_>>()
+            })).collect::<Vec<_>>(),
+            "report_plan": {
+                "goal": text,
+                "sections": (0..MAX_REPORT_SECTIONS).map(|index| json!({
+                    "heading": distinct(index), "focus": text
+                })).collect::<Vec<_>>()
+            }
+        });
+        serde_json::from_value::<DeepResearchPlan>(plan.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        let app = test::init_service(
+            App::new()
+                .app_data(Data::new(orchestrator()))
+                .configure(crate::handlers::configure),
+        )
+        .await;
+        for (path, body, status) in [
+            (
+                "/api/v1/deep/research",
+                json!({"plan": plan}),
+                StatusCode::OK,
+            ),
+            (
+                "/api/v1/deep/research/plan",
+                json!({"prompt": "revise", "previous_plan": plan}),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            let payload = serde_json::to_vec(&body).unwrap();
+            assert!(payload.len() > 2 * 1024 * 1024);
+            assert!(payload.len() < 16 * 1024 * 1024);
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(path)
+                    .insert_header(("Content-Type", "application/json"))
+                    .set_payload(payload)
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), status, "{path}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn json_payloads_over_the_transport_limit_are_rejected() {
+        let app = test::init_service(
+            App::new()
+                .app_data(Data::new(orchestrator()))
+                .configure(crate::handlers::configure),
+        )
+        .await;
+        for path in ["/api/v1/deep/research", "/api/v1/deep/research/plan"] {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(path)
+                    .insert_header(("Content-Type", "application/json"))
+                    .set_payload(" ".repeat(16 * 1024 * 1024 + 1))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        }
+    }
+
+    #[actix_web::test]
     async fn requests_beyond_the_concurrency_limit_are_rejected() {
         let orchestrator = limited_orchestrator(deep_research_orchestrator::ResearchLimits {
             max_concurrent_requests: Some(1),

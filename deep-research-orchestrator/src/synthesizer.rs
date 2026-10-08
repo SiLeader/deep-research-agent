@@ -32,6 +32,7 @@ pub struct ReportSection {
 
 impl FinalReport {
     fn validate(&self, plan: &ReportPlan, outputs: &[CompletedResearch]) -> anyhow::Result<()> {
+        deep_research_tools::validate_stage_output_size(self)?;
         anyhow::ensure!(
             !self.title.trim().is_empty() && !self.summary.trim().is_empty(),
             "report requires a title and summary"
@@ -193,5 +194,14 @@ mod tests {
         invalid.sections.clear();
         assert!(invalid.validate(&plan(), &outputs()).is_err());
         assert!(serde_json::from_value::<FinalReport>(json!({})).is_err());
+        let mut oversized = report();
+        oversized.sections[0].content = "x".repeat(deep_research_tools::MAX_STAGE_OUTPUT_CHARS);
+        assert!(
+            oversized
+                .validate(&plan(), &outputs())
+                .unwrap_err()
+                .to_string()
+                .contains("serialized JSON")
+        );
     }
 }

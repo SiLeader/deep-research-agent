@@ -11,6 +11,17 @@ use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// Serialized JSON characters per Explorer, research step, or final report.
+pub const MAX_STAGE_OUTPUT_CHARS: usize = 200_000;
+
+pub fn validate_stage_output_size(output: &impl Serialize) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        serde_json::to_string(output)?.chars().count() <= MAX_STAGE_OUTPUT_CHARS,
+        "output must be at most {MAX_STAGE_OUTPUT_CHARS} serialized JSON characters"
+    );
+    Ok(())
+}
+
 #[async_trait]
 pub trait DeepResearchTool: Send + Sync + Clone {
     type Args: JsonSchema + Serialize + DeserializeOwned;
@@ -112,6 +123,23 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn stage_output_size_counts_serialized_unicode_and_escape_sequences() {
+        for character in ['a', '日', '\n'] {
+            let overhead = serde_json::to_string("").unwrap().chars().count();
+            let width = serde_json::to_string(&character.to_string())
+                .unwrap()
+                .chars()
+                .count()
+                - overhead;
+            let text = character
+                .to_string()
+                .repeat((MAX_STAGE_OUTPUT_CHARS - overhead) / width);
+            validate_stage_output_size(&text).unwrap();
+            assert!(validate_stage_output_size(&format!("{text}{character}")).is_err());
+        }
+    }
 
     #[derive(Clone, JsonSchema, Serialize, Deserialize)]
     struct TestArgs {

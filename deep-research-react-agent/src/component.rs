@@ -62,9 +62,18 @@ impl ReActAgent {
             .position(|tool_call| self.stop_tool_names.contains(&tool_call.fn_name));
         let mut rejection = None;
         if let Some(index) = submission {
-            match validator.map(|validate| validate(&tool_calls[index].fn_arguments)) {
-                Some(Err(error)) => rejection = Some(error),
-                _ => return AgentEvent::Finish(tool_calls[index].clone()),
+            if tool_calls
+                .iter()
+                .any(|call| !self.stop_tool_names.contains(&call.fn_name))
+            {
+                rejection = Some(anyhow::anyhow!(
+                    "Submit in a separate turn after reviewing the other tools' results"
+                ));
+            } else {
+                match validator.map(|validate| validate(&tool_calls[index].fn_arguments)) {
+                    Some(Err(error)) => rejection = Some(error),
+                    _ => return AgentEvent::Finish(tool_calls[index].clone()),
+                }
             }
         }
 
@@ -141,17 +150,41 @@ pub(crate) fn compact_tool_responses(messages: &mut [ChatMessage], limit: usize)
             }
         }
     }
-    // The latest responses alone exceed the limit: share it among them.
+    // If placeholders and short responses still exceed the budget, empty the
+    // oldest responses before cutting into the latest results.
+    for (index, message) in messages.iter_mut().enumerate() {
+        if Some(index) == latest {
+            continue;
+        }
+        for part in message.content.iter_mut() {
+            if let ContentPart::ToolResponse(response) = part {
+                total -= size(&response.content);
+                response.content.clear();
+                if total <= limit {
+                    return;
+                }
+            }
+        }
+    }
     let Some(latest) = latest else { return };
     let message = &mut messages[latest];
-    let count = message.content.tool_responses().len().max(1);
-    let share = limit / count;
+    let mut remaining = limit;
+    let mut count = message.content.tool_responses().len();
+    const TRUNCATED: &str = "\n[Truncated to fit the context limit.]";
     for part in message.content.iter_mut() {
-        if let ContentPart::ToolResponse(response) = part
-            && size(&response.content) > share
-        {
-            let truncated: String = response.content.chars().take(share).collect();
-            response.content = format!("{truncated}\n[Truncated to fit the context limit.]");
+        if let ContentPart::ToolResponse(response) = part {
+            let share = remaining / count;
+            if size(&response.content) > share {
+                let suffix: String = TRUNCATED.chars().take(share).collect();
+                let prefix: String = response
+                    .content
+                    .chars()
+                    .take(share - size(&suffix))
+                    .collect();
+                response.content = format!("{prefix}{suffix}");
+            }
+            remaining -= size(&response.content);
+            count -= 1;
         }
     }
 }

@@ -87,9 +87,12 @@ impl Embedder {
         let response = match self.request_timeout {
             Some(timeout) => tokio::time::timeout(timeout, request)
                 .await
-                .map_err(|_| anyhow::anyhow!("embedding request timed out"))??,
-            None => request.await?,
-        };
+                .map_err(|_| anyhow::anyhow!("embedding request timed out"))?,
+            None => request.await,
+        }.map_err(|error| {
+            tracing::error!(model = %self.model, error = %error, "Embedding provider request failed");
+            anyhow::anyhow!("embedding provider request failed for model: {}; see server logs", self.model)
+        })?;
         ensure!(
             response.embeddings.len() == count,
             "embedding count mismatch"
@@ -482,6 +485,22 @@ mod tests {
 
     fn embedding(vector: Vec<f32>) -> Value {
         json!({"object": "list", "model": "test-embed", "data": [{"object": "embedding", "index": 0, "embedding": vector}], "usage": {"prompt_tokens": 1, "total_tokens": 1}})
+    }
+
+    #[tokio::test]
+    async fn embedding_provider_errors_do_not_expose_response_details() {
+        let (origin, task) = fixture(vec![
+            json!({"error": {"message": "private-embedding-provider-detail"}}),
+        ])
+        .await;
+        let error = embedder(origin)
+            .vectors(vec!["test".into()])
+            .await
+            .unwrap_err();
+        let returned = format!("{error:#}");
+        assert!(returned.contains("embedding provider request failed"));
+        assert!(!returned.contains("private-embedding-provider-detail"));
+        task.await.unwrap();
     }
 
     #[tokio::test]

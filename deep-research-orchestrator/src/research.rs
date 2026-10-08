@@ -82,6 +82,7 @@ pub(crate) struct CompletedResearch {
 
 impl ResearchStepOutput {
     fn validate(&self, plan: &ResearchStepPlan) -> anyhow::Result<()> {
+        deep_research_tools::validate_stage_output_size(self)?;
         anyhow::ensure!(
             self.findings.len() == plan.questions.len(),
             "expected {} findings, one per question in plan order, but got {}",
@@ -134,6 +135,7 @@ impl ResearchStepOutput {
 
 impl GapJudgeOutput {
     fn validate(&self, plan: &ResearchStepPlan) -> anyhow::Result<()> {
+        deep_research_tools::validate_stage_output_size(self)?;
         anyhow::ensure!(
             self.approved == self.gaps.is_empty(),
             "approved must equal gaps.is_empty()"
@@ -364,6 +366,16 @@ pub(crate) mod tests {
         assert!(invalid.validate(&plan()).is_err());
         invalid.findings[0].status = FindingStatus::Unanswered;
         invalid.validate(&plan()).unwrap();
+        let mut oversized = output();
+        oversized.findings[0].references[0].content =
+            "x".repeat(deep_research_tools::MAX_STAGE_OUTPUT_CHARS);
+        assert!(
+            oversized
+                .validate(&plan())
+                .unwrap_err()
+                .to_string()
+                .contains("serialized JSON")
+        );
     }
 
     #[test]
@@ -394,5 +406,14 @@ pub(crate) mod tests {
             invalid.gaps[0].question_number = number;
             assert!(invalid.validate(&plan()).is_err());
         }
+        let mut oversized = gap();
+        oversized.gaps[0].next_action = "x".repeat(deep_research_tools::MAX_STAGE_OUTPUT_CHARS);
+        assert!(
+            oversized
+                .validate(&plan())
+                .unwrap_err()
+                .to_string()
+                .contains("serialized JSON")
+        );
     }
 }

@@ -72,6 +72,7 @@ pub struct OneshotRunner {
     max_retries: u32,
 }
 
+#[derive(Debug)]
 enum AttemptError {
     Timeout,
     Genai(genai::Error),
@@ -114,7 +115,29 @@ impl AttemptError {
     fn into_anyhow(self, model: &str) -> anyhow::Error {
         match self {
             AttemptError::Timeout => anyhow::anyhow!("LLM request timed out for model: {model}"),
-            AttemptError::Genai(error) => error.into(),
+            AttemptError::Genai(error) => {
+                let status = match &error {
+                    genai::Error::HttpError { status, .. } => Some(*status),
+                    genai::Error::WebModelCall {
+                        webc_error: genai::webc::Error::ResponseFailedStatus { status, .. },
+                        ..
+                    }
+                    | genai::Error::WebAdapterCall {
+                        webc_error: genai::webc::Error::ResponseFailedStatus { status, .. },
+                        ..
+                    } => Some(*status),
+                    _ => None,
+                };
+                tracing::error!(model, error = %error, "LLM provider request failed");
+                match status {
+                    Some(status) => anyhow::anyhow!(
+                        "LLM provider request failed for model: {model} (HTTP {status})"
+                    ),
+                    None => anyhow::anyhow!(
+                        "LLM provider request failed for model: {model}; see server logs"
+                    ),
+                }
+            }
             AttemptError::Other(error) => error,
         }
     }
@@ -182,7 +205,7 @@ impl OneshotRunner {
                 model = %self.model,
                 attempt,
                 delay_ms = delay.as_millis() as u64,
-                error = %error.into_anyhow(&self.model),
+                error = ?error,
                 "Retrying LLM request"
             );
             tokio::time::sleep(delay).await;

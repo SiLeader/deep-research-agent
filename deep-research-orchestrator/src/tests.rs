@@ -174,28 +174,62 @@ fn fixture_orchestrator(
             },
         ))
         .build();
-    let agent = ReActAgent::new(
-        OneshotRunner::new(
-            "gpt-test".into(),
-            client,
-            Arc::new(SemaphoreConcurrencyArbiter::new(HashMap::from([(
-                "gpt-test".into(),
-                1,
-            )]))),
-            ChatOptions::default(),
-        ),
-        DeepResearchTools::default(),
-        String::new(),
-        Default::default(),
-    )
-    .unwrap();
-    DeepResearchOrchestrator::new(agent.clone(), agent.clone(), agent.clone(), agent)
-        .with_limits(limits)
+    let arbiter = Arc::new(SemaphoreConcurrencyArbiter::new(HashMap::from([
+        ("gpt-test".into(), 1),
+        ("synth-test".into(), 1),
+    ])));
+    let make_agent = |model: &str| {
+        ReActAgent::new(
+            OneshotRunner::new(
+                model.into(),
+                client.clone(),
+                arbiter.clone(),
+                ChatOptions::default(),
+            ),
+            DeepResearchTools::default(),
+            String::new(),
+            Default::default(),
+        )
         .unwrap()
+    };
+    let agent = make_agent("gpt-test");
+    DeepResearchOrchestrator::new(
+        agent.clone(),
+        agent.clone(),
+        agent,
+        make_agent("synth-test"),
+    )
+    .with_limits(limits)
+    .unwrap()
 }
 
 fn plan() -> DeepResearchPlan {
     serde_json::from_value(crate::plan::tests::plan_value()).unwrap()
+}
+
+#[tokio::test]
+async fn streamed_failures_do_not_include_provider_response_bodies() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            let body = r#"{"error":{"message":"private-provider-detail"}}"#;
+            socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let events: Vec<_> = fixture_orchestrator(addr, ResearchLimits::default())
+            .run_deep_research(plan()).unwrap().collect().await;
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].phase, stream::ResearchPhase::Researching(
+            deep_research_react_agent::event::AgentEvent::Error(_)
+        )));
+        assert!(matches!(events[1].phase, stream::ResearchPhase::Failed { .. }));
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(serialized.contains("HTTP 400"));
+        assert!(!serialized.contains("private-provider-detail"));
+        server.await.unwrap();
+    }).await.unwrap();
 }
 
 #[tokio::test]
@@ -254,6 +288,40 @@ async fn research_deadline_fails_the_research() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn synthesis_deadline_reports_the_synthesizer_model() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for arguments in [
+                serde_json::to_value(crate::research::tests::output()).unwrap(),
+                json!({"approved": true, "gaps": []}),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_request(&mut socket).await;
+                let body = json!({"id": "test", "object": "chat.completion", "created": 0, "model": "gpt-test",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": null,
+                    "tool_calls": [{"id": "submit-call", "type": "function", "function": {
+                        "name": "submit", "arguments": arguments.to_string()}}]}, "finish_reason": "tool_calls"}]}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert_eq!(read_request(&mut socket).await["model"], "synth-test");
+            futures::future::pending::<()>().await;
+        });
+        let events: Vec<_> = fixture_orchestrator(addr, ResearchLimits {
+            timeout: Some(Duration::from_secs(1)), ..Default::default()
+        }).run_deep_research(plan()).unwrap().collect().await;
+        assert!(events.iter().any(|event| matches!(event.phase, stream::ResearchPhase::ResearchStepCompleted(_))));
+        let last = serde_json::to_value(events.last().unwrap()).unwrap();
+        assert_eq!(last["phase"], "Failed");
+        assert_eq!(last["model"], "synth-test");
+        assert!(last["data"]["error"].as_str().unwrap().contains("time limit"));
+        server.abort();
+    }).await.unwrap();
 }
 
 #[test]
